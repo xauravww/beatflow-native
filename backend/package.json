@@ -1,0 +1,23 @@
+{
+  "name": "beatflow-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "BeatFlow music backend — YouTube Music search + audio stream extraction (Express).",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "update-ytdlp": "node -e \"import('youtube-dl-exec').then(m => m.default.update()).then(() => console.log('yt-dlp updated')).catch(e => { console.error(e.message); process.exit(1); })\""
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "play-dl": "^1.9.7",
+    "youtube-dl-exec": "^3.1.12",
+    "ytmusic-api": "^5.3.1"
+  }
+}
