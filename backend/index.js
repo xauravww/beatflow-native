@@ -66,6 +66,7 @@ async function searchViaYtDlp(query, limit = 25) {
     return [];
   }
   const args = [
+    ...YTDLP_GLOBAL_ARGS,
     '--no-warnings',
     '--no-playlist',
     '--flat-playlist',
@@ -196,6 +197,11 @@ async function getYtdlpBin() {
  */
 const YTDLP_CLIENTS = [null, 'android', 'ios', 'tv', 'web'];
 
+// YouTube's `n`-parameter / signature challenge now requires an external JS
+// runtime (we use the system node) plus yt-dlp's EJS challenge-solver scripts.
+// `--remote-components ejs:github` fetches them once and caches them locally.
+const YTDLP_GLOBAL_ARGS = ['--js-runtimes', 'node', '--remote-components', 'ejs:github'];
+
 async function resolveWithYtdlp(videoUrl) {
   const bin = await getYtdlpBin();
   if (!bin) {
@@ -205,6 +211,7 @@ async function resolveWithYtdlp(videoUrl) {
 
   for (const client of YTDLP_CLIENTS) {
     const args = [
+      ...YTDLP_GLOBAL_ARGS,
       '--no-playlist',
       '--no-warnings',
       // IPv4-signed URLs play far more reliably on mobile networks.
