@@ -8,50 +8,63 @@ This file documents **every change applied to the repo after pulling the latest
 
 ---
 
+## TL;DR — what was actually wrong & how it's fixed
+
+1. **Python 3.10 deprecated** → fixed earlier by `npm run setup` installing a
+   standalone `yt-dlp` binary (no Python needed).
+2. **`n`-parameter / signature challenge** ("Signature solving failed") → fixed
+   by passing `--js-runtimes node --remote-components ejs:github` to yt-dlp.
+3. **Datacenter / VPS bot-check** ("Sign in to confirm you're not a bot") →
+   YouTube blocks extraction from VPS IPs. Fixed by routing yt-dlp traffic
+   through **Cloudflare WARP** (free SOCKS proxy) via `--proxy
+   socks5://127.0.0.1:1080`.
+4. **Media delivery** → the backend **302-redirects** the client to the
+   (properly-signed) `googlevideo.com` URL. YouTube honors ranged requests from
+   the client's own (non-datacenter) IP, so the app streams directly. **No
+   server-side media proxying is needed** — the original 403s were caused by the
+   *broken signature* from the old extractor, not by an IP lock.
+
+---
+
 ## 1. Files MODIFIED
 
 ### `backend/index.js`
-YouTube now requires an external JS runtime to solve the `n`-parameter /
-signature challenge. Added a shared args constant and spread it into **both**
-yt-dlp invocations (search + stream).
 
-After the `YTDLP_CLIENTS` declaration, add:
+**a) Shared yt-dlp args** — after the `YTDLP_CLIENTS` declaration, add the
+EJS challenge-solver flags **and** the WARP proxy flag:
 
 ```js
 // YouTube's `n`-parameter / signature challenge now requires an external JS
 // runtime (we use the system node) plus yt-dlp's EJS challenge-solver scripts.
 // `--remote-components ejs:github` fetches them once and caches them locally.
-const YTDLP_GLOBAL_ARGS = ['--js-runtimes', 'node', '--remote-components', 'ejs:github'];
+// `--proxy` routes all YouTube traffic through Cloudflare WARP so the
+// datacenter/VPS bot-check ("Sign in to confirm you're not a bot") is avoided.
+// Set YTDLP_PROXY="" to disable (e.g. if WARP isn't running).
+const YTDLP_PROXY = process.env.YTDLP_PROXY || 'socks5://127.0.0.1:1080';
+const YTDLP_GLOBAL_ARGS = [
+  '--js-runtimes', 'node',
+  '--remote-components', 'ejs:github',
+  ...(YTDLP_PROXY ? ['--proxy', YTDLP_PROXY] : []),
+];
 ```
 
-In `searchViaYtDlp()` — prepend to the `args` array:
+These args are spread into **both** yt-dlp invocations (`searchViaYtDlp()` and
+`resolveWithYtdlp()`), so search and stream extraction both go through WARP.
+
+**b) `/api/stream`** — after resolving a URL, it **302-redirects** the client to
+it (no server-side media proxying):
 
 ```js
-  const args = [
-    ...YTDLP_GLOBAL_ARGS,
-    '--no-warnings',
-    '--no-playlist',
-    '--flat-playlist',
-    '-J',
-    `ytsearch${Math.min(limit, 25)}:${query}`,
-  ];
-```
-
-In `resolveWithYtdlp()` — prepend to the `args` array:
-
-```js
-    const args = [
-      ...YTDLP_GLOBAL_ARGS,
-      '--no-playlist',
-      '--no-warnings',
-      // IPv4-signed URLs play far more reliably on mobile networks.
-      '--force-ipv4',
-      '-f', 'bestaudio[ext=m4a]/bestaudio[ext=opus]/bestaudio',
-      '-g',
-    ];
+const cached = getCachedStream(id);
+const url = cached || (await resolveStream(id));
+if (url) {
+  cacheStream(id, url);
+  return res.redirect(302, url);
+}
 ```
 
 ### `backend/.gitignore`
+
 Append so cookies are never committed:
 
 ```gitignore
@@ -67,8 +80,9 @@ Append so cookies are never committed:
 ## 2. Files ADDED
 
 ### `backend/ecosystem.config.cjs`
-Used by pm2 so `YT_COOKIES` is set persistently (survives restarts). The value
-is a **path**, not the secret itself.
+
+Used by pm2 so `YT_COOKIES` and `YTDLP_PROXY` are set persistently (survive
+restarts). Values are **paths / proxy URLs**, not the secrets themselves.
 
 ```js
 module.exports = {
@@ -79,6 +93,7 @@ module.exports = {
       cwd: '/root/beatflow-native/backend',
       env: {
         YT_COOKIES: '/root/beatflow-native/backend/yt-cookies-netscape.txt',
+        YTDLP_PROXY: 'socks5://127.0.0.1:1080',
       },
     },
   ],
@@ -115,6 +130,31 @@ npm run setup          # installs deps + downloads standalone yt-dlp -> backend/
   the `/usr/local/bin/yt-dlp-311` wrapper created then is now **orphaned/unused**
   and can be deleted.)
 
+### Cloudflare WARP (the bot-check fix)
+
+YouTube blocks extraction from datacenter/VPS IPs. Cloudflare WARP gives us a
+clean egress IP for free.
+
+```bash
+# install the official client (Ubuntu/Debian)
+curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" > /etc/apt/sources.list.d/cloudflare-warp.list
+apt-get update && apt-get install -y cloudflare-warp
+
+# register + start a SOCKS proxy on 127.0.0.1:1080
+warp-cli --accept-tos registration new
+warp-cli --accept-tos mode proxy
+warp-cli --accept-tos proxy port 1080
+warp-cli --accept-tos connect
+systemctl enable warp-svc
+```
+
+Verify: `warp-cli --accept-tos status` → `Status update: Connected`,
+and `ss -ltnp | grep 1080` shows `warp-svc` listening.
+
+> If `warp-svc` shows `Disconnected` after a restart, run
+> `systemctl restart warp-svc` then `warp-cli --accept-tos connect` again.
+
 ### Deploy / run with pm2
 
 ```bash
@@ -128,17 +168,32 @@ pm2 save
 ## 5. Verify it works
 
 ```bash
+# stream endpoint -> 302 to a googlevideo URL
 curl -s -o /dev/null -w "HTTP %{http_code}\n" "http://localhost:3000/api/stream?id=dQw4w9WgXcQ"
-# 302 = yt-dlp resolved a playable URL
+# expect: 302
+
+# the client would then fetch that URL directly (range request -> 206):
+LOC=$(curl -s -D - -o /dev/null "http://localhost:3000/api/stream?id=dQw4w9WgXcQ" | grep -i '^location:' | awk '{print $2}' | tr -d '\r')
+curl -s -L -r 0-200000 -o /tmp/test.m4a "$LOC"
+file /tmp/test.m4a   # expect: ISO Media, MPEG v4 ... (audio)
+```
+
+```bash
 pm2 logs beatflow-backend --lines 20
 # expect NO "Deprecated Feature: Support for Python version 3.10" errors
+# expect NO "Sign in to confirm you're not a bot" errors
 ```
 
 ---
 
-## 6. Known remaining limitation (NOT a code bug)
+## 6. Why media is 302 and not server-proxied
 
-The extracted `googlevideo.com` URL is **IP-locked to the VPS** and YouTube
-returns **HTTP 403** for actual media from datacenter IPs. So the backend can
-extract a URL but cannot serve the audio from this VPS IP. This needs a
-residential proxy / different IP strategy to fully stream — out of scope here.
+The `googlevideo.com` URL is signed by YouTube during extraction. A full
+single-request download is rejected with **403** (YouTube caps per-request range
+size / blocks whole-file grabs), but **ranged requests from the client's own IP
+return 206** and play fine. So the backend only needs to (a) extract a valid,
+signed URL — which requires the WARP proxy to dodge the bot-check — and (b)
+hand that URL to the client via 302. The client's media player does the ranged
+fetching. No server-side relay is required, and attempts to relay via a SOCKS
+proxy hit YouTube's per-URL request limits / IP-rotation, so 302 is the correct
+design.

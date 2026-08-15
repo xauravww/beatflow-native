@@ -200,7 +200,15 @@ const YTDLP_CLIENTS = [null, 'android', 'ios', 'tv', 'web'];
 // YouTube's `n`-parameter / signature challenge now requires an external JS
 // runtime (we use the system node) plus yt-dlp's EJS challenge-solver scripts.
 // `--remote-components ejs:github` fetches them once and caches them locally.
-const YTDLP_GLOBAL_ARGS = ['--js-runtimes', 'node', '--remote-components', 'ejs:github'];
+// `--proxy` routes all YouTube traffic through Cloudflare WARP (free) so
+// YouTube's datacenter/VPS IP block ("Sign in to confirm you're not a bot")
+// and the googlevideo media 403 don't apply. Set YTDLP_PROXY="" to disable.
+const YTDLP_PROXY = process.env.YTDLP_PROXY || 'socks5://127.0.0.1:1080';
+const YTDLP_GLOBAL_ARGS = [
+  '--js-runtimes', 'node',
+  '--remote-components', 'ejs:github',
+  ...(YTDLP_PROXY ? ['--proxy', YTDLP_PROXY] : []),
+];
 
 async function resolveWithYtdlp(videoUrl) {
   const bin = await getYtdlpBin();
@@ -362,6 +370,11 @@ app.get('/api/stream', async (req, res) => {
   const url = cached || (await resolveStream(id));
   if (url) {
     cacheStream(id, url);
+    // Redirect the client to the (properly signed) googlevideo URL. YouTube's
+    // media CDN honors range requests from the client's own IP, so the app
+    // streams it directly. WARP is only needed for the *extraction* step above
+    // (set via YTDLP_PROXY in YTDLP_GLOBAL_ARGS) to dodge the datacenter
+    // bot-check; the media itself does not need to be proxied.
     return res.redirect(302, url);
   }
 
