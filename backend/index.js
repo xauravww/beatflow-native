@@ -195,7 +195,12 @@ async function getYtdlpBin() {
  * bypass YouTube's bot checks (web gets "Sign in to confirm you're not a
  * bot"). `null` = default client.
  */
-const YTDLP_CLIENTS = [null, 'android', 'ios', 'tv', 'web'];
+// Kept short on purpose: each client is a separate YouTube request, and
+// YouTube rate-limits the (shared WARP) egress IP under repeated requests,
+// so fewer fallbacks = less likely to trip "Sign in to confirm you're not a
+// bot" / rate-limit. WARP already bypasses most bot-checks, so the default
+// client + a couple of fallbacks is enough.
+const YTDLP_CLIENTS = [null, 'android', 'tv'];
 
 // YouTube's `n`-parameter / signature challenge now requires an external JS
 // runtime (we use the system node) plus yt-dlp's EJS challenge-solver scripts.

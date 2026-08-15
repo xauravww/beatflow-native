@@ -6,4 +6,5 @@ bin/
 
 # exported YouTube cookies (secret — never commit)
 *cookies*.txt
+*cookies*.json
 
