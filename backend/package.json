@@ -8,7 +8,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js",
-    "update-ytdlp": "node -e \"import('youtube-dl-exec').then(m => m.default.update()).then(() => console.log('yt-dlp updated')).catch(e => { console.error(e.message); process.exit(1); })\""
+    "setup": "bash setup.sh",
+    "update-ytdlp": "bash -c 'ARCH=$(uname -m); case $ARCH in x86_64|amd64) F=yt-dlp_linux;; aarch64|arm64) F=yt-dlp_linux_aarch64;; *) echo unsupported; exit 1;; esac; mkdir -p bin; curl -fL --retry 3 -o bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/$F && chmod +x bin/yt-dlp && bin/yt-dlp --version'"
   },
   "engines": {
     "node": ">=18"
@@ -17,7 +18,6 @@
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "play-dl": "^1.9.7",
-    "youtube-dl-exec": "^3.1.12",
     "ytmusic-api": "^5.3.1"
   }
 }

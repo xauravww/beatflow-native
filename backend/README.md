@@ -1,18 +1,24 @@
 # 🎵 BeatFlow Backend
 
 The self-hosted music backend for BeatFlow — an Express server that powers
-search (`ytmusic-api`) and audio streaming (bundled `yt-dlp`, with a
-`play-dl` last resort). No accounts, no keys, no database.
+search (`ytmusic-api` with a `yt-dlp` ytsearch fallback) and audio streaming
+(standalone `yt-dlp` binary with URL validation + Piped + `play-dl`
+fallbacks). No accounts, no keys, no database.
 
 ## Quick start
 
 ```sh
 cd backend
-npm install
-npm start          # http://localhost:3000
+npm run setup       # npm install + downloads standalone yt-dlp (no Python needed)
+npm start           # http://localhost:3000
 ```
 
 For development with auto-reload: `npm run dev`.
+
+> **On a fresh VPS, just run `npm run setup`** — it installs the deps *and* a
+> static `yt-dlp` binary into `backend/bin/yt-dlp`. The static build needs no
+> Python, so it works even on servers with old Python (3.10) that newer
+> `yt-dlp` refuses to run on.
 
 ## Verify it works
 
@@ -52,20 +58,23 @@ curl -L "http://localhost:3000/api/stream?id=<videoId>" -o test.mp4
 
 | Endpoint | What it does |
 |---|---|
-| `GET /api/ytmusic?q=…` | Searches YouTube Music via `ytmusic-api`, returns songs as JSON |
-| `GET /api/stream?id=…` | Serves playable audio for a YouTube video id — bundled `yt-dlp` resolves the direct URL (302 redirect), `play-dl` pipes it as an in-process fallback |
+| `GET /api/ytmusic?q=…` | Searches YouTube Music via `ytmusic-api` (falls back to a `yt-dlp` ytsearch scrape when YouTube Music blocks the server IP), returns songs as JSON |
+| `GET /api/stream?id=…` | Resolves a **validated** playable audio URL (302 redirect). Chain: `yt-dlp` (5 player clients) → Piped public instances → `play-dl` pipe |
 
 ## Streaming internals
 
-Stream extraction is handled by a **bundled `yt-dlp` binary** (installed
-automatically via `youtube-dl-exec` on `npm install`). `play-dl` remains
-as a last-resort in-process fallback.
+Stream extraction uses a **real `yt-dlp` binary** — the standalone static
+build at `backend/bin/yt-dlp` (from `npm run setup`, no Python required),
+then the system `yt-dlp` on PATH, then `$YTDLP_BIN`. It mirrors the exact
+approach that's proven to work in the [portfolio music app](https://github.com/xauravww/portfolio-xauravww-nextjs).
 
 The backend is careful not to upset YouTube:
 - **Caches** resolved stream URLs for 15 minutes — replaying a song never
   re-extracts it.
 - **Dedupes** concurrent requests for the same video (one extraction, shared
   by everyone).
+- **Validates every URL** (cheap ranged GET) before redirecting — a dead or
+  blocked URL never reaches the app; the chain moves to the next source.
 - **Retries with different player clients** (`android`, `ios`, `tv`, `web`)
   with a gentle backoff — the mobile clients usually pass the bot check.
 
@@ -90,6 +99,35 @@ play — that's what trips it). Fixes, in order:
    ```
 4. If you're behind a VPN / cloud host, try a different IP — some ranges
    are pre-flagged by YouTube.
+
+## Deploying on a VPS (the short version)
+
+```sh
+# 1. get the code
+git clone https://github.com/xauravww/beatflow-native.git
+cd beatflow-native/backend
+
+# 2. install everything (deps + standalone yt-dlp, no Python needed)
+npm run setup
+
+# 3. run it (use a process manager so it stays alive)
+npm install -g pm2
+pm2 start "npm start" --name beatflow-backend
+pm2 save
+pm2 startup   # follow the printed instructions so it survives reboots
+```
+
+Then open the firewall port if your VPS has one (`ufw allow 3000`), and in
+the app set **Settings → Backend URL** to `http://<vps-ip>:3000`.
+
+### Fixing common VPS errors
+
+| Error | Cause | Fix |
+|---|---|---|
+| `Cannot find package 'express'` | deps never installed (or `node_modules` wasn't copied) | run `npm run setup` / `npm install` inside `backend/` |
+| `Deprecated Feature: Support for Python version 3.10…` | old `youtube-dl-exec` wrapper needs Python 3.11+ | use the standalone binary — `npm run setup` (static build, **no Python**) |
+| `ytmusic search error: Request failed with status code 400` | YouTube Music blocks datacenter IPs | automatic — search falls back to a `yt-dlp` ytsearch scrape |
+| `Sign in to confirm you're not a bot` | YouTube bot-checks the server IP | `YT_COOKIES=/path/to/cookies.txt npm start` (see below), or a different IP range |
 
 ## Hosting
 
