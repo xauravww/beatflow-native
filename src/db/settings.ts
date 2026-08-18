@@ -28,6 +28,7 @@ export async function setSetting(
 
 const BACKEND_BASE_URL_KEY = 'backendBaseUrl';
 const YT_COOKIES_KEY = 'ytCookies';
+const AUTOPLAY_KEY = 'autoplay';
 
 /** Saved custom backend URL override (null = use the built-in defaults). */
 export function getBackendBaseUrlSetting(): Promise<string | null> {
@@ -52,4 +53,18 @@ export function getYtCookiesSetting(): Promise<string | null> {
 
 export function setYtCookiesSetting(cookies: string | null): Promise<void> {
   return setSetting(YT_COOKIES_KEY, cookies);
+}
+
+/**
+ * Keep playing similar songs when the queue runs out (YouTube Music radio
+ * seeded from the last track). On by default, like Spotify's autoplay — a
+ * queue that just stops dead is the single most noticeable difference from a
+ * real music app.
+ */
+export async function getAutoplaySetting(): Promise<boolean> {
+  return (await getSetting(AUTOPLAY_KEY)) !== '0';
+}
+
+export function setAutoplaySetting(enabled: boolean): Promise<void> {
+  return setSetting(AUTOPLAY_KEY, enabled ? '1' : '0');
 }

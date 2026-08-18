@@ -121,9 +121,15 @@ async function ensureConfig(): Promise<YtConfig | null> {
   return configPromise;
 }
 
-/** POST to an InnerTube endpoint ("browse", "search"). Null on any failure. */
-async function innertube(
-  endpoint: 'browse' | 'search',
+/**
+ * POST to an InnerTube endpoint ("browse", "search", "next"). Null on any
+ * failure.
+ *
+ * Exported so the radio/autoplay layer (`ytmusicRadio.ts`) can reuse the same
+ * cached page config instead of bootstrapping a second one.
+ */
+export async function innertube(
+  endpoint: 'browse' | 'search' | 'next',
   payload: Record<string, unknown>,
 ): Promise<any | null> {
   const cfg = await ensureConfig();
@@ -186,7 +192,7 @@ function browse(payload: Record<string, unknown>): Promise<any | null> {
 // empties out after a YouTube deploy.
 
 /** Every value stored under `key`, at any depth. */
-function collect(node: any, key: string, out: any[] = []): any[] {
+export function collect(node: any, key: string, out: any[] = []): any[] {
   if (!node || typeof node !== 'object') {
     return out;
   }
@@ -207,7 +213,7 @@ function collect(node: any, key: string, out: any[] = []): any[] {
 }
 
 /** First `text` string found under a node (titles, labels, …). */
-function firstText(node: any): string {
+export function firstText(node: any): string {
   const texts = collect(node, 'text');
   for (const t of texts) {
     if (typeof t === 'string' && t.trim()) {
@@ -218,7 +224,7 @@ function firstText(node: any): string {
 }
 
 /** Highest-resolution thumbnail, upgraded to a size worth showing full-width. */
-function bestThumbnail(node: any): string {
+export function bestThumbnail(node: any): string {
   const lists = collect(node, 'thumbnails');
   let best = '';
   let bestWidth = -1;
@@ -239,7 +245,7 @@ function bestThumbnail(node: any): string {
 }
 
 /** "3:45" / "1:02:03" → seconds. 0 when absent or unparseable. */
-function parseDuration(label: string): number {
+export function parseDuration(label: string): number {
   const parts = label.split(':').map((p) => parseInt(p, 10));
   if (parts.some((p) => Number.isNaN(p))) {
     return 0;

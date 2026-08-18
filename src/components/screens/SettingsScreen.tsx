@@ -5,6 +5,7 @@ import {
   Linking,
   Platform,
   ScrollView,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -19,6 +20,8 @@ import {
   setBackendBaseUrlSetting,
   getYtCookiesSetting,
   setYtCookiesSetting,
+  getAutoplaySetting,
+  setAutoplaySetting,
 } from '../../db/settings';
 import { usePlayer } from '../../context/PlayerContext';
 
@@ -33,25 +36,33 @@ export default function SettingsScreen() {
   const [saving, setSaving] = useState(false);
   const [cookiesInput, setCookiesInput] = useState('');
   const [savedCookies, setSavedCookies] = useState(false);
+  const [autoplay, setAutoplay] = useState(true);
 
   useEffect(() => {
     let mounted = true;
     (async () => {
-      const [url, cookies] = await Promise.all([
+      const [url, cookies, autoplayOn] = await Promise.all([
         getBackendBaseUrlSetting().catch(() => null),
         getYtCookiesSetting().catch(() => null),
+        getAutoplaySetting().catch(() => true),
       ]);
       if (mounted) {
         setSavedUrl(url);
         setInput(url ?? '');
         setCookiesInput(cookies ?? '');
         setSavedCookies(!!cookies);
+        setAutoplay(autoplayOn);
       }
     })();
     return () => {
       mounted = false;
     };
   }, []);
+
+  const handleAutoplayChange = async (value: boolean) => {
+    setAutoplay(value);
+    await setAutoplaySetting(value).catch(() => {});
+  };
 
   const effectiveUrl = savedUrl ?? LOCAL_BASE_URL;
 
@@ -115,8 +126,37 @@ export default function SettingsScreen() {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          {/* ---- Backend server ---- */}
+          {/* ---- Playback ---- */}
           <View className="px-5 mt-4">
+            <Text className="text-white/50 text-xs font-semibold tracking-[0.2em] mb-4">
+              PLAYBACK
+            </Text>
+            <View className="bg-[#181818] rounded-2xl p-5">
+              <View className="flex-row items-center">
+                <View className="w-10 h-10 rounded-full bg-[#1ed760]/15 items-center justify-center">
+                  <Icon name="infinite-outline" size={19} color="#1ed760" />
+                </View>
+                <View className="flex-1 ml-3 mr-3">
+                  <Text className="text-white font-bold text-[15px]">
+                    Autoplay
+                  </Text>
+                  <Text className="text-white/50 text-xs mt-0.5">
+                    Keep playing similar songs when the queue ends, using
+                    YouTube Music's radio for the last track
+                  </Text>
+                </View>
+                <Switch
+                  value={autoplay}
+                  onValueChange={handleAutoplayChange}
+                  trackColor={{ false: 'rgba(255,255,255,0.15)', true: '#1ed760' }}
+                  thumbColor="#ffffff"
+                />
+              </View>
+            </View>
+          </View>
+
+          {/* ---- Backend server ---- */}
+          <View className="px-5 mt-6">
             <Text className="text-white/50 text-xs font-semibold tracking-[0.2em] mb-4">
               BACKEND SERVER
             </Text>

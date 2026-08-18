@@ -15,7 +15,9 @@ import TrackPlayer, {
   useProgress,
 } from 'react-native-track-player';
 import { Song } from '../api/types';
-import { songToTrack } from '../services/trackPlayerService';
+import { songToTrack, songToTrackFast } from '../services/trackPlayerService';
+import { getRadioTracks } from '../api/ytmusicRadio';
+import { getAutoplaySetting } from '../db/settings';
 import { prefetchArtwork } from '../components/ui/Artwork';
 import { addPlayedSeconds, logPlay } from '../db/history';
 import { closeFullPlayer, openFullPlayer } from '../navigation/navigationRef';
@@ -85,16 +87,26 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const [baseQueue, setBaseQueue] = useState<Song[]>([]);
   const [queue, setQueue] = useState<Song[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [repeat, setRepeat] = useState<Repeat>('all');
+  // Default 'off' so a finished queue hands over to autoplay radio, the way
+  // Spotify does. 'all' would loop the same tracks forever and autoplay would
+  // never get a turn.
+  const [repeat, setRepeat] = useState<Repeat>('off');
   const [shuffle, setShuffle] = useState(false);
   const [loadingSongId, setLoadingSongId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const queueRef = useRef<Song[]>([]);
-  const repeatRef = useRef<Repeat>('all');
+  const repeatRef = useRef<Repeat>('off');
   const shuffleRef = useRef(false);
   const currentIndexRef = useRef(0);
+  // Ids whose native track still holds the placeholder backend URL, waiting to
+  // be upgraded to an on-device one (see upgradeUpcoming).
+  const fastIdsRef = useRef<Set<string>>(new Set());
+  const upgradingRef = useRef(false);
+  // Last track a radio was requested for, so autoplay asks once per seed.
+  const radioSeedRef = useRef<string | null>(null);
+  const extendingRef = useRef(false);
   useEffect(() => {
     queueRef.current = queue;
   }, [queue]);
@@ -198,6 +210,9 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       // instant feedback: mark the tapped song as loading right away
       setLoadingSongId(songs[startIndex]?.id ?? null);
       setBaseQueue(songs);
+      // A new queue invalidates both lazy-URL bookkeeping and the radio seed.
+      fastIdsRef.current = new Set();
+      radioSeedRef.current = null;
       if (shuffleRef.current) {
         const rest = songs.filter((_, i) => i !== startIndex);
         const ordered = [songs[startIndex], ...shuffleArray(rest)];
@@ -550,6 +565,100 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     () => queue[currentIndex] ?? null,
     [queue, currentIndex],
   );
+
+  // --- Lazy stream URLs -------------------------------------------------
+  // Tracks appended in bulk (radio) go in with the backend URL, which costs
+  // nothing to build, and are swapped for an on-device URL shortly before
+  // they play.
+  /**
+   * Replace the placeholder URL of the next couple of tracks with a resolved
+   * on-device one. remove()+add() at an index above the current track doesn't
+   * touch playback, so this is invisible — unlike load(), which would restart
+   * the song.
+   */
+  const upgradeUpcoming = useCallback(async () => {
+    if (upgradingRef.current) {
+      return;
+    }
+    upgradingRef.current = true;
+    try {
+      const from = currentIndexRef.current + 1;
+      for (let i = from; i <= from + 1; i++) {
+        const song = queueRef.current[i];
+        if (!song || !fastIdsRef.current.has(song.id) || song.isDownloaded) {
+          continue;
+        }
+        const track = await songToTrack(song);
+        // The queue can shift while we were resolving — only patch the slot if
+        // it still holds the same song.
+        if (queueRef.current[i]?.id !== song.id) {
+          continue;
+        }
+        try {
+          await TrackPlayer.remove(i);
+          await TrackPlayer.add(track, i);
+          fastIdsRef.current.delete(song.id);
+        } catch (e) {
+          console.warn('stream prefetch swap failed for', song.id, e);
+        }
+      }
+    } finally {
+      upgradingRef.current = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    upgradeUpcoming();
+  }, [currentIndex, queue, upgradeUpcoming]);
+
+  // --- Autoplay: keep going with radio ----------------------------------
+  // A queue that stops dead at the last track is the most obvious way this
+  // stops feeling like a music app. YouTube Music's radio for the last song
+  // is appended instead, which also means recommendations come from their
+  // recommender rather than one we'd have to build.
+  const extendWithRadio = useCallback(async () => {
+    const q = queueRef.current;
+    const seed = q[q.length - 1];
+    if (extendingRef.current || !seed || radioSeedRef.current === seed.id) {
+      return;
+    }
+    extendingRef.current = true;
+    radioSeedRef.current = seed.id;
+    try {
+      if (!(await getAutoplaySetting())) {
+        return;
+      }
+      const radio = await getRadioTracks(seed.id);
+      const known = new Set(queueRef.current.map((s) => s.id));
+      const fresh = radio.filter((s) => !known.has(s.id));
+      if (fresh.length === 0) {
+        return;
+      }
+      await TrackPlayer.add(fresh.map(songToTrackFast));
+      for (const s of fresh) {
+        fastIdsRef.current.add(s.id);
+      }
+      setQueue((prev) => [...prev, ...fresh]);
+      setBaseQueue((prev) => [...prev, ...fresh]);
+      console.log(`autoplay: +${fresh.length} radio tracks from ${seed.id}`);
+    } catch (e) {
+      console.warn('autoplay radio failed:', e);
+    } finally {
+      extendingRef.current = false;
+    }
+  }, []);
+
+  // Extend while there's still a track in hand, so the handover is seamless.
+  // Repeat modes loop the queue by design, so they opt out.
+  useEffect(() => {
+    if (
+      repeat === 'off' &&
+      queue.length > 0 &&
+      currentIndex >= queue.length - 2
+    ) {
+      extendWithRadio();
+    }
+  }, [currentIndex, queue.length, repeat, extendWithRadio]);
 
   /**
    * The neighbouring tracks a swipe reaches, mirroring skipNext()/
