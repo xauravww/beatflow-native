@@ -1,7 +1,6 @@
 import TrackPlayer, {
   AppKilledPlaybackBehavior,
   Capability,
-  RepeatMode,
 } from 'react-native-track-player';
 import { resolveStreamUrl } from '../api/client';
 import { Song } from '../api/types';
@@ -28,8 +27,10 @@ export async function setupPlayer(): Promise<void> {
       ],
       progressUpdateEventInterval: 1,
     });
-    // React state controls boundaries; this is a safe base mode.
-    await TrackPlayer.setRepeatMode(RepeatMode.Off);
+    // Repeat mode is owned by PlayerContext, which pushes it from its own
+    // `repeat` state on mount. Setting it here as well is what made the
+    // repeat button look broken: the UI started on 'all' while the player
+    // was forced to Off.
   } catch (e) {
     console.log('Error setting up player:', e);
   }

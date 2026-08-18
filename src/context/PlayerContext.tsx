@@ -154,6 +154,42 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
+  /**
+   * Reorder the tracks *after* `from` in the native queue so they match
+   * `desired`, using move() instead of reset() + add().
+   *
+   * Re-adding is what shuffle used to do, and it was the bug: songToTrack()
+   * resolves a fresh stream URL per track (an InnerTube player request plus a
+   * proxy registration each), and reset() stops playback while that happens.
+   * Tapping shuffle therefore killed the audio, froze for seconds, then
+   * restarted the song from 0:00. move() only permutes items the player
+   * already holds, so the current track keeps playing untouched.
+   *
+   * Everything at or before `from` is left alone on purpose — that's the
+   * current track and what already played, which shuffle must never disturb.
+   */
+  const applyTailOrder = useCallback(
+    async (live: Song[], desired: Song[], from: number) => {
+      // Mirror of the native order, kept in step with the moves we issue.
+      const order = [...live];
+      for (let target = from; target < desired.length; target++) {
+        const wanted = desired[target].id;
+        if (order[target]?.id === wanted) {
+          continue;
+        }
+        const at = order.findIndex((s, i) => i > target && s.id === wanted);
+        if (at < 0) {
+          continue;
+        }
+        await TrackPlayer.move(at, target);
+        const [moved] = order.splice(at, 1);
+        order.splice(target, 0, moved);
+      }
+      return order;
+    },
+    [],
+  );
+
   const playQueue = useCallback(
     async (songs: Song[], startIndex = 0) => {
       if (songs.length === 0) {
@@ -166,9 +202,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         const rest = songs.filter((_, i) => i !== startIndex);
         const ordered = [songs[startIndex], ...shuffleArray(rest)];
         setQueue(ordered);
+        setCurrentIndex(0);
         await loadOrder(ordered);
       } else {
         setQueue(songs);
+        setCurrentIndex(startIndex);
         await TrackPlayer.reset();
         await TrackPlayer.add(await Promise.all(songs.map(songToTrack)));
         await TrackPlayer.skip(startIndex);
@@ -276,44 +314,61 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   }, [skipTo]);
 
   const toggleRepeat = useCallback(() => {
-    setRepeat((r) => {
-      const nextRepeat = REPEAT_ORDER[(REPEAT_ORDER.indexOf(r) + 1) % 3];
-      const mode =
-        nextRepeat === 'all'
-          ? RepeatMode.Queue
-          : nextRepeat === 'one'
-            ? RepeatMode.Track
-            : RepeatMode.Off;
-      TrackPlayer.setRepeatMode(mode);
-      return nextRepeat;
-    });
+    setRepeat((r) => REPEAT_ORDER[(REPEAT_ORDER.indexOf(r) + 1) % 3]);
   }, []);
 
+  // Native repeat mode is derived from `repeat`, never set independently.
+  // It used to be set inside toggleRepeat() while setupPlayer() forced
+  // RepeatMode.Off, so on a cold start the icon showed repeat-all with the
+  // player actually repeating nothing, and the first tap looked like it
+  // skipped a step. This effect runs on mount too, so the two can't diverge.
+  // The native mode only governs *natural* track end; the transport buttons
+  // apply `repeat` themselves in next()/previous().
+  useEffect(() => {
+    const mode =
+      repeat === 'all'
+        ? RepeatMode.Queue
+        : repeat === 'one'
+          ? RepeatMode.Track
+          : RepeatMode.Off;
+    TrackPlayer.setRepeatMode(mode).catch(() => {});
+  }, [repeat]);
+
+  /**
+   * Shuffle, Spotify-style: the playing track never changes and never
+   * restarts — only what comes *after* it is reordered. Turning shuffle off
+   * puts the upcoming tracks back into their original `baseQueue` order.
+   *
+   * Because the current track stays at its index, `currentIndex` stays valid
+   * and there's no window where `currentSong` points at the wrong row.
+   */
   const toggleShuffle = useCallback(async () => {
     const willShuffle = !shuffleRef.current;
     setShuffle(willShuffle);
-    if (queueRef.current.length === 0) {
+
+    const live = queueRef.current;
+    const from = currentIndexRef.current + 1;
+    if (live.length === 0 || from >= live.length) {
       return;
     }
-    if (willShuffle) {
-      const rest = queueRef.current.filter(
-        (_, i) => i !== currentIndexRef.current,
-      );
-      const ordered = [
-        queueRef.current[currentIndexRef.current],
-        ...shuffleArray(rest),
-      ];
-      setQueue(ordered);
-      await loadOrder(ordered);
-    } else {
-      // restore original order, keeping the current song first
-      const current = queueRef.current[currentIndexRef.current];
-      const rest = baseQueue.filter((s) => s.id !== current.id);
-      const ordered = [current, ...rest];
-      setQueue(ordered);
-      await loadOrder(ordered);
-    }
-  }, [baseQueue, loadOrder]);
+
+    const head = live.slice(0, from);
+    const tail = live.slice(from);
+    const orderedTail = willShuffle
+      ? shuffleArray(tail)
+      : // Restore the original relative order. Songs missing from baseQueue
+        // (queued by hand while shuffled) keep their spot at the end.
+        [...tail].sort((a, b) => {
+          const ai = baseQueue.findIndex((s) => s.id === a.id);
+          const bi = baseQueue.findIndex((s) => s.id === b.id);
+          return (ai < 0 ? Number.MAX_SAFE_INTEGER : ai) -
+            (bi < 0 ? Number.MAX_SAFE_INTEGER : bi);
+        });
+
+    const desired = [...head, ...orderedTail];
+    const applied = await applyTailOrder(live, desired, from);
+    setQueue(applied);
+  }, [applyTailOrder, baseQueue]);
 
   const openPlayer = useCallback(() => {
     openFullPlayer();
@@ -472,11 +527,21 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         : queueRef.current.length;
       await TrackPlayer.add(await songToTrack(song), insertIndex);
       setQueue((prev) => {
-        const next = [...prev];
-        next.splice(insertIndex, 0, song);
-        return next;
+        const updated = [...prev];
+        updated.splice(insertIndex, 0, song);
+        return updated;
       });
-      setBaseQueue((prev) => [...prev, song]);
+      // Mirror the insert into the unshuffled order too, so turning shuffle
+      // off doesn't drop a hand-queued song to the very end.
+      setBaseQueue((prev) => {
+        const current = queueRef.current[currentIndexRef.current];
+        const at = playNext
+          ? prev.findIndex((s) => s.id === current?.id) + 1
+          : prev.length;
+        const updated = [...prev];
+        updated.splice(at <= 0 ? prev.length : at, 0, song);
+        return updated;
+      });
     },
     [playQueue],
   );
