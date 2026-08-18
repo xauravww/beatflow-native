@@ -22,6 +22,7 @@
  */
 import express from 'express';
 import cors from 'cors';
+import net from 'node:net';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -66,7 +67,7 @@ async function searchViaYtDlp(query, limit = 25) {
     return [];
   }
   const args = [
-    ...YTDLP_GLOBAL_ARGS,
+    ...(await getYtdlpGlobalArgs()),
     '--no-warnings',
     '--no-playlist',
     '--flat-playlist',
@@ -205,15 +206,44 @@ const YTDLP_CLIENTS = [null, 'android', 'tv'];
 // YouTube's `n`-parameter / signature challenge now requires an external JS
 // runtime (we use the system node) plus yt-dlp's EJS challenge-solver scripts.
 // `--remote-components ejs:github` fetches them once and caches them locally.
-// `--proxy` routes all YouTube traffic through Cloudflare WARP (free) so
-// YouTube's datacenter/VPS IP block ("Sign in to confirm you're not a bot")
-// and the googlevideo media 403 don't apply. Set YTDLP_PROXY="" to disable.
+//
+// `--proxy` routes all YouTube traffic through Cloudflare WARP (free) so the
+// datacenter/VPS IP block ("Sign in to confirm you're not a bot") and the
+// googlevideo media 403 don't apply — but ONLY when WARP is actually running.
+// On a residential IP (or a box without WARP) the SOCKS port is dead and
+// routing through it makes EVERY yt-dlp call fail instantly with
+// "Command failed". So we probe the port first and only add `--proxy` when
+// something is listening; direct connections work fine otherwise.
+// Set YTDLP_PROXY="" in env to force-disable the proxy entirely.
 const YTDLP_PROXY = process.env.YTDLP_PROXY || 'socks5://127.0.0.1:1080';
-const YTDLP_GLOBAL_ARGS = [
-  '--js-runtimes', 'node',
-  '--remote-components', 'ejs:github',
-  ...(YTDLP_PROXY ? ['--proxy', YTDLP_PROXY] : []),
-];
+
+// Probe result is cached for 10s so we don't open a socket on every request.
+let proxyProbe = { at: 0, up: false };
+async function isYtdlpProxyUp() {
+  if (!YTDLP_PROXY) return false;
+  if (Date.now() - proxyProbe.at < 10_000) return proxyProbe.up;
+  proxyProbe.at = Date.now();
+  proxyProbe.up = await new Promise((resolve) => {
+    const { hostname, port } = new URL(YTDLP_PROXY);
+    const sock = net.connect(Number(port), hostname);
+    sock.setTimeout(1500, () => sock.destroy());
+    sock.once('connect', () => {
+      sock.destroy();
+      resolve(true);
+    });
+    sock.once('error', () => resolve(false));
+  });
+  return proxyProbe.up;
+}
+
+/** Base yt-dlp args; `--proxy` is included only when WARP is actually up. */
+async function getYtdlpGlobalArgs() {
+  return [
+    '--js-runtimes', 'node',
+    '--remote-components', 'ejs:github',
+    ...((await isYtdlpProxyUp()) ? ['--proxy', YTDLP_PROXY] : []),
+  ];
+}
 
 async function resolveWithYtdlp(videoUrl) {
   const bin = await getYtdlpBin();
@@ -224,7 +254,7 @@ async function resolveWithYtdlp(videoUrl) {
 
   for (const client of YTDLP_CLIENTS) {
     const args = [
-      ...YTDLP_GLOBAL_ARGS,
+      ...(await getYtdlpGlobalArgs()),
       '--no-playlist',
       '--no-warnings',
       // IPv4-signed URLs play far more reliably on mobile networks.
@@ -378,8 +408,8 @@ app.get('/api/stream', async (req, res) => {
     // Redirect the client to the (properly signed) googlevideo URL. YouTube's
     // media CDN honors range requests from the client's own IP, so the app
     // streams it directly. WARP is only needed for the *extraction* step above
-    // (set via YTDLP_PROXY in YTDLP_GLOBAL_ARGS) to dodge the datacenter
-    // bot-check; the media itself does not need to be proxied.
+    // (auto-enabled via YTDLP_PROXY when the SOCKS port is up) to dodge the
+    // datacenter bot-check; the media itself does not need to be proxied.
     return res.redirect(302, url);
   }
 

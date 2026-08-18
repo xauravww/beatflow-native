@@ -30,6 +30,25 @@ curl "http://localhost:3000/api/ytmusic?q=never+gonna+give+you+up"
 curl -L "http://localhost:3000/api/stream?id=<videoId>" -o test.mp4
 ```
 
+## Environment variables
+
+All optional — the server runs fine with defaults. See `.env.example`.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `PORT` | `3000` | HTTP port the server listens on |
+| `YT_COOKIES` | — | Path to a Netscape-format `cookies.txt` for youtube.com. Fixes “Sign in to confirm you're not a bot” on VPS/datacenter IPs. Not needed on a residential IP. |
+| `YTDLP_PROXY` | `socks5://127.0.0.1:1080` | SOCKS proxy **URL** for yt-dlp (e.g. Cloudflare WARP) — a URL, not `true`/`false`. **Auto-detected**: only used when the proxy port is actually listening; set `YTDLP_PROXY=""` to disable and go direct (residential IP / no WARP). |
+| `YTDLP_BIN` | `bin/yt-dlp`, then system `yt-dlp` | Explicit path to a yt-dlp binary |
+
+Set them however you run the server:
+
+```sh
+YT_COOKIES=/path/to/cookies.txt PORT=8080 npm start
+```
+
+or in pm2 (`ecosystem.config.cjs` → `env` block).
+
 ## Point the app at it
 
 1. Run the backend on your machine (or any always-on server).

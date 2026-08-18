@@ -31,7 +31,9 @@ This file documents **every change applied to the repo after pulling the latest
 ### `backend/index.js`
 
 **a) Shared yt-dlp args** — after the `YTDLP_CLIENTS` declaration, add the
-EJS challenge-solver flags **and** the WARP proxy flag:
+EJS challenge-solver flags **and** the WARP proxy flag. The proxy is
+**auto-detected**: it's only added when the SOCKS port is actually listening,
+so a residential IP (no WARP) or an explicit `YTDLP_PROXY=""` goes direct:
 
 ```js
 // YouTube's `n`-parameter / signature challenge now requires an external JS
@@ -39,17 +41,38 @@ EJS challenge-solver flags **and** the WARP proxy flag:
 // `--remote-components ejs:github` fetches them once and caches them locally.
 // `--proxy` routes all YouTube traffic through Cloudflare WARP so the
 // datacenter/VPS bot-check ("Sign in to confirm you're not a bot") is avoided.
-// Set YTDLP_PROXY="" to disable (e.g. if WARP isn't running).
+// It's only used when the SOCKS port is reachable — a dead proxy makes every
+// yt-dlp call fail with "Command failed", so we probe first and go direct
+// when nothing is listening. Set YTDLP_PROXY="" to force-disable.
 const YTDLP_PROXY = process.env.YTDLP_PROXY || 'socks5://127.0.0.1:1080';
-const YTDLP_GLOBAL_ARGS = [
-  '--js-runtimes', 'node',
-  '--remote-components', 'ejs:github',
-  ...(YTDLP_PROXY ? ['--proxy', YTDLP_PROXY] : []),
-];
+
+let proxyProbe = { at: 0, up: false };
+async function isYtdlpProxyUp() {
+  if (!YTDLP_PROXY) return false;
+  if (Date.now() - proxyProbe.at < 10_000) return proxyProbe.up;
+  proxyProbe.at = Date.now();
+  proxyProbe.up = await new Promise((resolve) => {
+    const { hostname, port } = new URL(YTDLP_PROXY);
+    const sock = net.connect(Number(port), hostname);
+    sock.setTimeout(1500, () => sock.destroy());
+    sock.once('connect', () => { sock.destroy(); resolve(true); });
+    sock.once('error', () => resolve(false));
+  });
+  return proxyProbe.up;
+}
+
+async function getYtdlpGlobalArgs() {
+  return [
+    '--js-runtimes', 'node',
+    '--remote-components', 'ejs:github',
+    ...((await isYtdlpProxyUp()) ? ['--proxy', YTDLP_PROXY] : []),
+  ];
+}
 ```
 
 These args are spread into **both** yt-dlp invocations (`searchViaYtDlp()` and
-`resolveWithYtdlp()`), so search and stream extraction both go through WARP.
+`resolveWithYtdlp()`), so search and stream extraction both use WARP when it's
+up, or go direct otherwise.
 
 **b) `/api/stream`** — after resolving a URL, it **302-redirects** the client to
 it (no server-side media proxying):
