@@ -14,20 +14,9 @@ export async function playbackService() {
     TrackPlayer.seekTo(position),
   );
 
-  // If a stream fails (common with unofficial YouTube streams), skip to the
-  // next track instead of stalling — only when there is a next track, to
-  // avoid endless loops on the last one.
-  TrackPlayer.addEventListener(Event.PlaybackError, async () => {
-    try {
-      const index = await TrackPlayer.getActiveTrackIndex();
-      const queue = await TrackPlayer.getQueue();
-      if (index != null && index < queue.length - 1) {
-        await TrackPlayer.skip(index + 1);
-      } else {
-        await TrackPlayer.pause();
-      }
-    } catch (e) {
-      console.log('PlaybackError handler failed:', e);
-    }
-  });
+  // NOTE: no PlaybackError handler here. Skipping on stream failure used to
+  // live here (background service context), racing the retry logic in
+  // PlayerContext and silently advancing tracks. All error handling now
+  // happens in PlayerContext, which retries the same track in place and
+  // never auto-advances.
 }

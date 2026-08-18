@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
-  Image,
   Pressable,
   Text,
   useWindowDimensions,
@@ -15,6 +14,7 @@ import { isSongSaved, removeSavedSong, saveSong } from '../../db/songs';
 import { useSwipeCarousel } from '../../hooks/useSwipeCarousel';
 import { Song } from '../../api/types';
 import PressableScale from './PressableScale';
+import Artwork from './Artwork';
 
 /** Horizontal gap between carousel bars (must match useSwipeCarousel). */
 const ITEM_GAP = 10;
@@ -26,17 +26,19 @@ export default function MiniPlayer() {
     isBuffering,
     togglePlay,
     next,
-    previous,
+    skipNext,
+    skipPrevious,
     openPlayer,
     getSwipeTargets,
   } = usePlayer();
   const { width: windowWidth } = useWindowDimensions();
   const [saved, setSaved] = useState(false);
   const heartScale = useRef(new Animated.Value(1)).current;
-  // swipe left/right → scroll to next/prev track; swipe up → pull up player
+  // swipe left/right → scroll to next/prev track; swipe up → pull up player.
+  // Swipes use skipNext/skipPrevious so a drag is always a track change.
   const gesture = useSwipeCarousel({
-    next,
-    previous,
+    next: skipNext,
+    previous: skipPrevious,
     onPullUp: openPlayer,
     getSwipeTargets,
     currentSongId: currentSong?.id ?? null,
@@ -105,11 +107,17 @@ export default function MiniPlayer() {
         <Animated.View
           style={{
             flexDirection: 'row',
+            // shift the row so the *current* bar occupies the visible slot
+            // even when a prev bar is rendered ahead of it
+            marginLeft: gesture.rowOffset(itemWidth),
             transform: [{ translateX: gesture.translateX }],
           }}
         >
-          {prevSong && <MiniBarView song={prevSong} width={itemWidth} />}
+          {prevSong && (
+            <MiniBarView key={prevSong.id} song={prevSong} width={itemWidth} />
+          )}
           <MiniBarView
+            key={currentSong.id}
             song={currentSong}
             width={itemWidth}
             onPress={openPlayer}
@@ -121,7 +129,9 @@ export default function MiniPlayer() {
             onTogglePlay={togglePlay}
             onNext={next}
           />
-          {nextSong && <MiniBarView song={nextSong} width={itemWidth} />}
+          {nextSong && (
+            <MiniBarView key={nextSong.id} song={nextSong} width={itemWidth} />
+          )}
         </Animated.View>
       </View>
     </Animated.View>
@@ -162,7 +172,7 @@ function MiniBarView({
         onPress={onPress}
         className="flex-row items-center bg-[#282828] rounded-md px-2 py-2 overflow-hidden"
       >
-        <Image source={{ uri: song.cover }} className="w-11 h-11 rounded" />
+        <Artwork songId={song.id} uri={song.cover} className="w-11 h-11 rounded" />
         <View className="flex-1 ml-3 min-w-0">
           <Text numberOfLines={1} className="text-white text-sm font-semibold">
             {song.title}

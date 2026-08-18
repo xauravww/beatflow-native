@@ -13,15 +13,15 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { RootStackParamList } from '../../navigation/types';
 import { fetchHomeSections } from '../../api/client';
-import { Song } from '../../api/types';
+import { ShelfItem, Song } from '../../api/types';
 import { getRecentPlays } from '../../db/history';
 import { getPlaylists } from '../../db/playlists';
 import { useCachedData } from '../../hooks/useCachedData';
 import { usePlayer } from '../../context/PlayerContext';
 import { getGreeting } from '../../utils/format';
 import { colors } from '../../theme/colors';
-import TrackCard from '../ui/TrackCard';
 import SectionHeader from '../ui/SectionHeader';
+import ShelfRow from '../ui/ShelfRow';
 import Skeleton from '../ui/Skeleton';
 
 export default function HomeScreen() {
@@ -48,6 +48,7 @@ export default function HomeScreen() {
   const sections = data?.sections ?? null;
   const recent = data?.recent ?? [];
   const playlists = data?.playlists ?? [];
+  const shelves = sections?.shelves ?? [];
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -55,12 +56,29 @@ export default function HomeScreen() {
     setRefreshing(false);
   }, [refresh]);
 
-  const playSongs = (songs: Song[], index: number) => {
-    playQueue(songs, index);
-    navigation.navigate('FullPlayer');
-  };
-  const openArtist = (name: string) =>
-    navigation.navigate('Artist', { artistName: name });
+  const playSongs = useCallback(
+    (songs: Song[], index: number) => {
+      playQueue(songs, index);
+      navigation.navigate('FullPlayer');
+    },
+    [navigation, playQueue],
+  );
+  const openArtist = useCallback(
+    (name: string) => navigation.navigate('Artist', { artistName: name }),
+    [navigation],
+  );
+  const openCollection = useCallback(
+    (item: Extract<ShelfItem, { kind: 'collection' }>) => {
+      navigation.navigate('YtPlaylist', {
+        collectionId: item.id,
+        name: item.title,
+        cover: item.cover,
+        subtitle: item.subtitle,
+        type: item.type,
+      });
+    },
+    [navigation],
+  );
 
   return (
     <ScrollView
@@ -78,7 +96,9 @@ export default function HomeScreen() {
       {/* Header */}
       <View className="flex-row items-center justify-between px-4 mb-2">
         <View>
-          <Text className="text-white text-[26px] font-bold">{getGreeting()}</Text>
+          <Text className="text-white text-[26px] font-bold">
+            {getGreeting()}
+          </Text>
           <Text className="text-white/50 text-sm">🎵 BeatFlow</Text>
         </View>
         <Pressable
@@ -89,30 +109,31 @@ export default function HomeScreen() {
         </Pressable>
       </View>
 
-      {loading && !sections ? (
-        <HomeSkeleton />
-      ) : !sections || sections.local.length === 0 ? (
-        <View className="items-center justify-center py-32 px-10">
-          <Icon name="cloud-offline-outline" size={48} color="rgba(255,255,255,0.25)" />
-          <Text className="text-white/50 text-center mt-4 text-sm">
-            Couldn't reach the music server. Make sure your backend is running,
-            then pull to refresh.
-          </Text>
+      {/* Spotify's shortcut grid: the last things you played, two per row. */}
+      {recent.length > 0 && (
+        <View className="flex-row flex-wrap px-4 mt-3 gap-2">
+          {recent.slice(0, 6).map((song, i) => (
+            <Pressable
+              key={song.id}
+              onPress={() => playSongs(recent, i)}
+              className="w-[48.5%] flex-row items-center bg-white/10 active:bg-white/20 rounded-md overflow-hidden"
+            >
+              <Image source={{ uri: song.cover }} className="w-[52px] h-[52px]" />
+              <Text
+                numberOfLines={2}
+                className="flex-1 text-white text-[12px] font-bold px-2"
+              >
+                {song.title}
+              </Text>
+            </Pressable>
+          ))}
         </View>
+      )}
+
+      {loading && shelves.length === 0 ? (
+        <HomeSkeleton />
       ) : (
         <>
-          {/* Recently played */}
-          {recent.length > 0 && (
-            <>
-              <SectionHeader title="Recently Played" />
-              <HorizontalRow
-                songs={recent}
-                onPlay={playSongs}
-                onArtistPress={openArtist}
-              />
-            </>
-          )}
-
           {/* Your playlists — quick access */}
           {playlists.length > 0 && (
             <>
@@ -162,43 +183,38 @@ export default function HomeScreen() {
             </>
           )}
 
-          {/* Trending near you — 2-column grid */}
-          <SectionHeader
-            title="Trending Near You"
-            subtitle={`Top hits in ${sections.country}`}
-          />
-          <View className="flex-row flex-wrap px-4 gap-3">
-            {sections.local.map((song, i) => (
-              <View key={song.id} className="w-[48%]">
-                <TrackCard
-                  song={song}
-                  onPlay={() => playSongs(sections.local, i)}
-                  onArtistPress={() => openArtist(song.artist)}
+          {shelves.length === 0 ? (
+            <View className="items-center justify-center py-24 px-10">
+              <Icon
+                name="cloud-offline-outline"
+                size={48}
+                color="rgba(255,255,255,0.25)"
+              />
+              <Text className="text-white/50 text-center mt-4 text-sm">
+                Couldn't reach YouTube Music. Check your connection, then pull
+                to refresh.
+              </Text>
+            </View>
+          ) : (
+            /* The real YouTube Music feed — localized shelves, in its order. */
+            shelves.map((shelf, i) => (
+              <View key={`${shelf.title}-${i}`}>
+                <SectionHeader
+                  title={shelf.title}
+                  subtitle={
+                    i === 0 && sections?.country
+                      ? `Popular in ${sections.country}`
+                      : undefined
+                  }
+                />
+                <ShelfRow
+                  shelf={shelf}
+                  onPlaySongs={playSongs}
+                  onOpenCollection={openCollection}
+                  onOpenArtist={openArtist}
                 />
               </View>
-            ))}
-          </View>
-
-          {/* Horizontal rows */}
-          {sections.topHits.length > 0 && (
-            <>
-              <SectionHeader title="Global Top Hits" />
-              <HorizontalRow
-                songs={sections.topHits}
-                onPlay={playSongs}
-                onArtistPress={openArtist}
-              />
-            </>
-          )}
-          {sections.trending.length > 0 && (
-            <>
-              <SectionHeader title="Trending Pop Music" />
-              <HorizontalRow
-                songs={sections.trending}
-                onPlay={playSongs}
-                onArtistPress={openArtist}
-              />
-            </>
+            ))
           )}
         </>
       )}
@@ -208,47 +224,21 @@ export default function HomeScreen() {
 
 function HomeSkeleton() {
   return (
-    <View className="px-4 pt-4">
-      <Skeleton className="h-7 w-44 mb-6" />
-      <View className="flex-row flex-wrap gap-3">
-        {Array.from({ length: 6 }).map((_, i) => (
-          <View key={i} className="w-[48%]">
-            <Skeleton className="w-full aspect-square rounded-md" />
-            <Skeleton className="h-3 w-3/4 mt-2" />
-            <Skeleton className="h-3 w-1/2 mt-1.5" />
+    <View className="pt-6">
+      {[0, 1].map((row) => (
+        <View key={row}>
+          <Skeleton className="h-6 w-44 mb-4 ml-4" />
+          <View className="flex-row px-4 gap-3 mb-7">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <View key={i} className="w-[150px]">
+                <Skeleton className="w-full aspect-square rounded-md" />
+                <Skeleton className="h-3 w-3/4 mt-2" />
+                <Skeleton className="h-3 w-1/2 mt-1.5" />
+              </View>
+            ))}
           </View>
-        ))}
-      </View>
-    </View>
-  );
-}
-
-function HorizontalRow({
-  songs,
-  onPlay,
-  onArtistPress,
-}: {
-  songs: Song[];
-  onPlay: (songs: Song[], index: number) => void;
-  onArtistPress?: (artistName: string) => void;
-}) {
-  return (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
-    >
-      {songs.map((song, i) => (
-        <View key={song.id} className="w-[150px]">
-          <TrackCard
-            song={song}
-            onPlay={() => onPlay(songs, i)}
-            onArtistPress={
-              onArtistPress ? () => onArtistPress(song.artist) : undefined
-            }
-          />
         </View>
       ))}
-    </ScrollView>
+    </View>
   );
 }

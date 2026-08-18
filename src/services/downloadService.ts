@@ -1,5 +1,5 @@
 import RNFS from 'react-native-fs';
-import { getStreamUrl } from '../api/client';
+import { resolveStreamUrl } from '../api/client';
 import { Song } from '../api/types';
 import { clearDownload, markDownloaded } from '../db/songs';
 
@@ -30,7 +30,7 @@ export async function downloadTrack(
     }
 
     const download = RNFS.downloadFile({
-      fromUrl: getStreamUrl(song.id),
+      fromUrl: await resolveStreamUrl(song.id),
       toFile: target,
       progress: (res) => {
         if (res.contentLength > 0) {

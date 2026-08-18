@@ -151,17 +151,10 @@ export default function LibraryScreen() {
             </Pressable>
             <Pressable
               onPress={() => navigation.navigate('Credits')}
-              className="w-9 h-9 rounded-full bg-[#282828] items-center justify-center mr-2"
-              hitSlop={8}
-            >
-              <Icon name="information-circle-outline" size={20} color="#ffffff" />
-            </Pressable>
-            <Pressable
-              onPress={() => navigation.navigate('Settings')}
               className="w-9 h-9 rounded-full bg-[#282828] items-center justify-center"
               hitSlop={8}
             >
-              <Icon name="settings-outline" size={19} color="#ffffff" />
+              <Icon name="information-circle-outline" size={20} color="#ffffff" />
             </Pressable>
           </View>
         </View>

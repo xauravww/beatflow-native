@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { Animated, PanResponder } from 'react-native';
 import type { GestureResponderHandlers, LayoutChangeEvent } from 'react-native';
 import { Song } from '../api/types';
@@ -11,6 +11,8 @@ const PULL_UP_THRESHOLD = 80;
 const ACTIVATION_DISTANCE = 10;
 /** Gap between carousel items (px). */
 const ITEM_GAP = 10;
+/** Give up waiting for the track swap and snap back after this long. */
+const SETTLE_TIMEOUT = 900;
 
 interface UseSwipeCarouselOptions {
   next: () => void | Promise<void>;
@@ -34,6 +36,11 @@ interface UseSwipeCarouselOptions {
  * translate the row with the finger — the neighbor cover peeks in while you
  * drag. Releasing past a threshold scrolls to the neighbor and swaps the
  * track; otherwise it springs back. Optional vertical pull-up (mini player).
+ *
+ * Layout contract for callers: render the items in prev/current/next order
+ * inside an `overflow: hidden` box one item wide, and shift the row by
+ * [rowOffset] (as `marginLeft`) so the *current* item — not `prevSong` — is
+ * the one in the visible slot.
  */
 export function useSwipeCarousel({
   next,
@@ -50,12 +57,21 @@ export function useSwipeCarousel({
   /** Neighbor tracks to render (null when a swipe wouldn't reach one). */
   prevSong: Song | null;
   nextSong: Song | null;
+  /**
+   * Static left shift for the item row (px, negative or 0). Apply as
+   * `marginLeft` so the current item sits in the visible slot even when a
+   * `prevSong` card is rendered before it.
+   */
+  rowOffset: (itemWidth: number) => number;
 } {
   const widthRef = useRef(0);
   const translateX = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(0)).current;
   const slidingRef = useRef(false);
   const axisRef = useRef<'x' | 'y' | null>(null);
+  /** true between "animation finished" and "the track actually changed". */
+  const awaitingSwapRef = useRef(false);
+  const swapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Callbacks are recreated by the context, so read the freshest via ref.
   const optsRef = useRef({
@@ -74,6 +90,38 @@ export function useSwipeCarousel({
     getSwipeTargets,
     currentSongId,
   };
+
+  /**
+   * Land the carousel once the new track is actually current. The row is left
+   * parked at the settled offset until then: the neighbor card the user
+   * dragged in becomes the current card in the same commit that resets the
+   * offset, so nothing ever flashes back to the old track.
+   */
+  const finishSwap = () => {
+    if (swapTimerRef.current) {
+      clearTimeout(swapTimerRef.current);
+      swapTimerRef.current = null;
+    }
+    awaitingSwapRef.current = false;
+    translateX.setValue(0);
+    slidingRef.current = false;
+  };
+
+  useEffect(() => {
+    if (awaitingSwapRef.current) {
+      finishSwap();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSongId]);
+
+  useEffect(
+    () => () => {
+      if (swapTimerRef.current) {
+        clearTimeout(swapTimerRef.current);
+      }
+    },
+    [],
+  );
 
   const springBack = () => {
     Animated.parallel([
@@ -96,9 +144,9 @@ export function useSwipeCarousel({
 
   /**
    * Scroll the carousel by one item. dir = 1 → next (slide left),
-   * dir = -1 → previous (slide right). After the neighbor is centered we
-   * swap the track; the new current is the same visual position, so the
-   * row can snap back to 0 without any visible jump.
+   * dir = -1 → previous (slide right). The track swap is requested once the
+   * neighbor is centered; the row stays parked there until the swap lands
+   * (see finishSwap), which keeps the transition seamless.
    */
   const settle = (dir: 1 | -1) => {
     const step = widthRef.current + ITEM_GAP;
@@ -113,13 +161,15 @@ export function useSwipeCarousel({
         slidingRef.current = false;
         return;
       }
+      awaitingSwapRef.current = true;
+      // Safety net: if the player never reports a new track (skip failed),
+      // snap back instead of leaving the row parked off-screen.
+      swapTimerRef.current = setTimeout(finishSwap, SETTLE_TIMEOUT);
       if (dir === 1) {
         optsRef.current.next();
       } else {
         optsRef.current.previous();
       }
-      translateX.setValue(0);
-      slidingRef.current = false;
     });
   };
 
@@ -219,5 +269,9 @@ export function useSwipeCarousel({
     onLayout,
     prevSong,
     nextSong,
+    // A rendered prev card takes the first slot, so shift the row one item
+    // left to bring the current card back into view.
+    rowOffset: (itemWidth: number) =>
+      prevSong ? -(itemWidth + ITEM_GAP) : 0,
   };
 }

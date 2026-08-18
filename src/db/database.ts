@@ -48,9 +48,23 @@ export async function initDb(): Promise<void> {
       songId TEXT PRIMARY KEY,
       syncedLyrics TEXT,
       plainLyrics TEXT,
-      cachedAt INTEGER
+      cachedAt INTEGER,
+      matchedDuration REAL NOT NULL DEFAULT 0
     );
   `);
+
+  // Migration: older installs lack matchedDuration (the runtime of the lyric
+  // version we matched — used to decide whether the timestamps can be trusted
+  // for auto-highlight/auto-scroll).
+  const [lyricsInfo] = await database.executeSql(
+    'PRAGMA table_info(lyrics_cache)',
+  );
+  const lyricsColumns = lyricsInfo.rows.raw() as { name: string }[];
+  if (!lyricsColumns.some((c) => c.name === 'matchedDuration')) {
+    await database.executeSql(
+      'ALTER TABLE lyrics_cache ADD COLUMN matchedDuration REAL NOT NULL DEFAULT 0',
+    );
+  }
   await database.executeSql(`
     CREATE TABLE IF NOT EXISTS history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

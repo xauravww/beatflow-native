@@ -16,6 +16,7 @@ import TrackPlayer, {
 } from 'react-native-track-player';
 import { Song } from '../api/types';
 import { songToTrack } from '../services/trackPlayerService';
+import { prefetchArtwork } from '../components/ui/Artwork';
 import { addPlayedSeconds, logPlay } from '../db/history';
 import { closeFullPlayer, openFullPlayer } from '../navigation/navigationRef';
 
@@ -36,15 +37,22 @@ interface PlayerContextValue {
   togglePlay: () => Promise<void>;
   next: () => Promise<void>;
   previous: () => Promise<void>;
+  /** Always moves to the next queue track (never restarts, unlike `next`). */
+  skipNext: () => Promise<void>;
+  /** Always moves to the previous queue track (never restarts). */
+  skipPrevious: () => Promise<void>;
   toggleRepeat: () => void;
   toggleShuffle: () => Promise<void>;
   playAt: (index: number) => Promise<void>;
   openPlayer: () => void;
   closePlayer: () => void;
+  /** Tell the player the user just seeked — resets the stall watchdog. */
+  markSeek: () => void;
   /**
-   * The songs a horizontal swipe would actually land on, matching the real
-   * `next`/`previous` behavior (queue edges, repeat mode, restart-when-
-   * >3s). Used by the swipe carousels so the preview always matches audio.
+   * The neighbouring queue tracks a horizontal swipe lands on, matching
+   * `skipNext`/`skipPrevious`. A swipe is a track change, so unlike the
+   * transport buttons it ignores repeat-one and the restart-when->3s rule —
+   * only real queue edges produce a null.
    */
   getSwipeTargets: () => { prev: Song | null; next: Song | null };
   /** Transient status message shown as a toast (e.g. "Stream unavailable"). */
@@ -139,7 +147,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const loadOrder = useCallback(
     async (ordered: Song[]) => {
       await TrackPlayer.reset();
-      await TrackPlayer.add(ordered.map(songToTrack));
+      await TrackPlayer.add(await Promise.all(ordered.map(songToTrack)));
       await TrackPlayer.skip(0);
       await TrackPlayer.play();
     },
@@ -162,7 +170,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       } else {
         setQueue(songs);
         await TrackPlayer.reset();
-        await TrackPlayer.add(songs.map(songToTrack));
+        await TrackPlayer.add(await Promise.all(songs.map(songToTrack)));
         await TrackPlayer.skip(startIndex);
         await TrackPlayer.play();
       }
@@ -216,7 +224,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     if (queueRef.current.length === 0) {
       return;
     }
-    if (position > 3) {
+    // positionRef, not the position state: a dep on position would rebuild this
+    // callback (and with it the whole context value) twice a second, which
+    // re-renders every consumer in the app.
+    if (positionRef.current > 3) {
       await TrackPlayer.seekTo(0);
       return;
     }
@@ -225,7 +236,44 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     await TrackPlayer.skip(target);
     await TrackPlayer.play();
     setCurrentIndex(target);
-  }, [position]);
+  }, []);
+
+  /** Move to a queue index, with instant loading feedback. */
+  const skipTo = useCallback(async (target: number) => {
+    const q = queueRef.current;
+    if (target < 0 || target >= q.length) {
+      return;
+    }
+    setLoadingSongId(q[target].id);
+    await TrackPlayer.skip(target);
+    await TrackPlayer.play();
+    setCurrentIndex(target);
+  }, []);
+
+  /**
+   * Swipe/carousel "next": always a real track change. Unlike `next` it
+   * ignores repeat-one (which restarts the track) — a swipe should never
+   * leave the user on the same song.
+   */
+  const skipNext = useCallback(async () => {
+    const q = queueRef.current;
+    if (q.length === 0) {
+      return;
+    }
+    const i = currentIndexRef.current;
+    if (i < q.length - 1) {
+      await skipTo(i + 1);
+    } else if (repeatRef.current === 'all') {
+      await skipTo(0);
+    }
+  }, [skipTo]);
+
+  /** Swipe/carousel "previous": always a real track change (never restarts). */
+  const skipPrevious = useCallback(async () => {
+    if (currentIndexRef.current > 0) {
+      await skipTo(currentIndexRef.current - 1);
+    }
+  }, [skipTo]);
 
   const toggleRepeat = useCallback(() => {
     setRepeat((r) => {
@@ -282,21 +330,105 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     toastTimeoutRef.current = setTimeout(() => setToast(null), 3200);
   }, []);
 
-  // Surface stream failures instead of failing silently — skip the track
-  // and tell the user which one couldn't play.
+  // --- Retry in place — never auto-skip -------------------------------
+  // A failing or stalled track is retried with a freshly resolved URL while
+  // preserving the seek position. The user always stays on the same song;
+  // if it keeps failing we stop retrying and let them tap play/skip
+  // manually — the app never advances tracks on its own.
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryCountRef = useRef(0);
+  const retryForRef = useRef<string | null>(null);
+  const lastErrorAtRef = useRef(0);
+
+  const clearRetryTimer = useCallback(() => {
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+  }, []);
+
+  const cancelRetry = useCallback(() => {
+    clearRetryTimer();
+    retryForRef.current = null;
+    retryCountRef.current = 0;
+  }, [clearRetryTimer]);
+
+  /** Re-resolve the current track's URL and reload it, keeping the position. */
+  const retryCurrentTrack = useCallback(async () => {
+    const failed = queueRef.current[currentIndexRef.current];
+    if (!failed) {
+      return;
+    }
+    const at = positionRef.current;
+    try {
+      const track = await songToTrack(failed);
+      await TrackPlayer.load(track);
+      // restore the position so a failed seek/stream doesn't jump the user back
+      if (at > 1) {
+        try {
+          await TrackPlayer.seekTo(at);
+        } catch {
+          // position restore is best-effort
+        }
+      }
+      await TrackPlayer.play();
+      console.log('retried stream for', failed.id, 'at', at);
+    } catch (e) {
+      console.warn('stream retry failed for', failed.id, e);
+    }
+  }, []);
+
+  /** Back off and retry the current track (bounded, then hands off to the user). */
+  const scheduleRetry = useCallback(
+    (failed: Song) => {
+      if (retryForRef.current !== failed.id) {
+        retryForRef.current = failed.id;
+        retryCountRef.current = 0;
+      }
+      retryCountRef.current += 1;
+      lastErrorAtRef.current = Date.now();
+      if (retryCountRef.current > 5) {
+        cancelRetry();
+        showToast(
+          `Can't play "${failed.title ?? 'this song'}" right now — tap play to retry`,
+        );
+        return;
+      }
+      const delay = Math.min(
+        2000 * Math.pow(2, retryCountRef.current - 1),
+        15000,
+      );
+      clearRetryTimer();
+      retryTimerRef.current = setTimeout(() => {
+        retryTimerRef.current = null;
+        retryCurrentTrack();
+      }, delay);
+    },
+    [cancelRetry, clearRetryTimer, retryCurrentTrack, showToast],
+  );
+
+  // On any playback error: retry the same track, never skip.
   useEffect(() => {
     const sub = TrackPlayer.addEventListener(Event.PlaybackError, () => {
-      const skipped = queueRef.current[currentIndexRef.current];
-      next();
-      showToast(
-        `Couldn't play "${skipped?.title ?? 'this song'}" — skipping`,
-      );
+      const failed = queueRef.current[currentIndexRef.current];
+      if (failed) {
+        scheduleRetry(failed);
+      }
     });
-    return () => sub.remove();
-  }, [next, showToast]);
+    return () => {
+      sub.remove();
+      clearRetryTimer();
+    };
+  }, [scheduleRetry, clearRetryTimer]);
+
+  // Reset the retry budget whenever the active track changes (manual skip,
+  // auto-advance, new queue…).
+  useEffect(() => {
+    cancelRetry();
+  }, [currentIndex, cancelRetry]);
 
   // Watchdog: if a track is stuck buffering for too long (no error event,
-  // e.g. a stalled stream), skip it so playback never hangs silently.
+  // e.g. a stalled stream), retry it in place instead of skipping.
   const isBufferingRef = useRef(false);
   const bufferingSinceRef = useRef<number | null>(null);
   useEffect(() => {
@@ -312,17 +444,21 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         bufferingSinceRef.current = Date.now();
         return;
       }
-      if (Date.now() - bufferingSinceRef.current > 15000) {
+      if (Date.now() - bufferingSinceRef.current > 25000) {
         bufferingSinceRef.current = Date.now(); // reset so it won't loop
         const stuck = queueRef.current[currentIndexRef.current];
-        next();
-        showToast(
-          `Couldn't play "${stuck?.title ?? 'this song'}" — skipping`,
-        );
+        if (stuck) {
+          scheduleRetry(stuck);
+        }
       }
     }, 2000);
     return () => clearInterval(interval);
-  }, [next, showToast]);
+  }, [scheduleRetry]);
+
+  // A seek legitimately causes a re-buffer — don't count that as a stall.
+  const markSeek = useCallback(() => {
+    bufferingSinceRef.current = null;
+  }, []);
 
   /** Insert a song either right after the current track or at the end of the queue. */
   const addToQueue = useCallback(
@@ -334,7 +470,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       const insertIndex = playNext
         ? currentIndexRef.current + 1
         : queueRef.current.length;
-      await TrackPlayer.add(songToTrack(song), insertIndex);
+      await TrackPlayer.add(await songToTrack(song), insertIndex);
       setQueue((prev) => {
         const next = [...prev];
         next.splice(insertIndex, 0, song);
@@ -351,33 +487,40 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   );
 
   /**
-   * What a swipe would actually reach, mirroring next()/previous():
-   *  - next: no neighbor when repeat is 'one' (restarts) or when at the end
-   *    with repeat 'off' (pauses); wraps only with repeat 'all'.
-   *  - prev: no neighbor at the first track, or when >3s in (restarts).
+   * The neighbouring tracks a swipe reaches, mirroring skipNext()/
+   * skipPrevious(): the real adjacent queue entries, wrapping forward only
+   * with repeat 'all'. Repeat-one and the >3s restart rule deliberately do
+   * NOT apply here — a swipe is always a track change, so the cover that
+   * peeks in while dragging is always the one that will play.
+   *
+   * Reads state (not refs) on purpose: the carousels call this during render,
+   * and refs are only synced in an effect — so refs would hand back the
+   * *previous* track's neighbours for one commit after every skip.
    */
   const getSwipeTargets = useCallback(() => {
-    const q = queueRef.current;
-    const i = currentIndexRef.current;
-    const rep = repeatRef.current;
-    const pos = positionRef.current;
-    if (q.length === 0) {
+    if (queue.length === 0) {
       return { prev: null, next: null };
     }
-    let next: Song | null = null;
-    if (rep !== 'one') {
-      if (i < q.length - 1) {
-        next = q[i + 1];
-      } else if (rep === 'all') {
-        next = q[0];
-      }
+    let nextSong: Song | null = null;
+    if (currentIndex < queue.length - 1) {
+      nextSong = queue[currentIndex + 1];
+    } else if (repeat === 'all') {
+      nextSong = queue[0];
     }
-    let prev: Song | null = null;
-    if (pos <= 3 && i > 0) {
-      prev = q[i - 1];
-    }
-    return { prev, next };
-  }, []);
+    const prevSong: Song | null =
+      currentIndex > 0 ? queue[currentIndex - 1] : null;
+    return { prev: prevSong, next: nextSong };
+  }, [queue, currentIndex, repeat]);
+
+  // Warm the image cache for the covers a swipe/skip is about to show, so the
+  // artwork swaps at the same instant as the title instead of decoding after.
+  useEffect(() => {
+    prefetchArtwork([
+      queue[currentIndex - 1]?.cover,
+      queue[currentIndex + 1]?.cover,
+      queue[currentIndex + 2]?.cover,
+    ]);
+  }, [queue, currentIndex]);
 
   // --- Real listening-time tracking --------------------------------------
   // Accumulate actual seconds played (position deltas while playing) and
@@ -393,6 +536,14 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     // only count forward progress while actually playing; ignore seeks
     if (state === State.Playing && delta > 0 && delta < 10) {
       playedAccumRef.current += delta;
+      // a song playing cleanly for a while gets a fresh retry budget
+      if (
+        retryCountRef.current > 0 &&
+        Date.now() - lastErrorAtRef.current > 45000
+      ) {
+        retryForRef.current = null;
+        retryCountRef.current = 0;
+      }
     }
   }, [position, state]);
 
@@ -445,11 +596,14 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       togglePlay,
       next,
       previous,
+      skipNext,
+      skipPrevious,
       toggleRepeat,
       toggleShuffle,
       playAt,
       openPlayer,
       closePlayer,
+      markSeek,
       getSwipeTargets,
       toast,
       showToast,
@@ -470,11 +624,14 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       togglePlay,
       next,
       previous,
+      skipNext,
+      skipPrevious,
       toggleRepeat,
       toggleShuffle,
       playAt,
       openPlayer,
       closePlayer,
+      markSeek,
       getSwipeTargets,
     ],
   );

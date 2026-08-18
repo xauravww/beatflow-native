@@ -9,6 +9,7 @@ import FullPlayer from '../components/player/FullPlayer';
 import CreditsScreen from '../components/screens/CreditsScreen';
 import SettingsScreen from '../components/screens/SettingsScreen';
 import PlaylistScreen from '../components/screens/PlaylistScreen';
+import YtPlaylistScreen from '../components/screens/YtPlaylistScreen';
 import ArtistScreen from '../components/screens/ArtistScreen';
 import StatsScreen from '../components/screens/StatsScreen';
 import SpotifySyncScreen from '../components/screens/SpotifySyncScreen';
@@ -45,6 +46,7 @@ export default function AppNavigator() {
         <Stack.Screen name="Credits" component={CreditsScreen} />
         <Stack.Screen name="Settings" component={SettingsScreen} />
         <Stack.Screen name="Playlist" component={PlaylistScreen} />
+        <Stack.Screen name="YtPlaylist" component={YtPlaylistScreen} />
         <Stack.Screen name="Artist" component={ArtistScreen} />
         <Stack.Screen name="Stats" component={StatsScreen} />
         <Stack.Screen name="SpotifySync" component={SpotifySyncScreen} />

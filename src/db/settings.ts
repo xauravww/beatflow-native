@@ -27,6 +27,7 @@ export async function setSetting(
 }
 
 const BACKEND_BASE_URL_KEY = 'backendBaseUrl';
+const YT_COOKIES_KEY = 'ytCookies';
 
 /** Saved custom backend URL override (null = use the built-in defaults). */
 export function getBackendBaseUrlSetting(): Promise<string | null> {
@@ -37,4 +38,18 @@ export function setBackendBaseUrlSetting(
   url: string | null,
 ): Promise<void> {
   return setSetting(BACKEND_BASE_URL_KEY, url);
+}
+
+/**
+ * Saved YouTube cookies (Netscape cookies.txt from a browser logged into
+ * YouTube, or a raw `name=value; …` string). Sent with on-device player
+ * requests — mirrors the backend's YT_COOKIES and lifts YouTube's ~1MB
+ * anonymous-stream cap on flagged networks.
+ */
+export function getYtCookiesSetting(): Promise<string | null> {
+  return getSetting(YT_COOKIES_KEY);
+}
+
+export function setYtCookiesSetting(cookies: string | null): Promise<void> {
+  return setSetting(YT_COOKIES_KEY, cookies);
 }

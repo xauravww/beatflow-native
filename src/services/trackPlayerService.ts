@@ -3,7 +3,7 @@ import TrackPlayer, {
   Capability,
   RepeatMode,
 } from 'react-native-track-player';
-import { getStreamUrl } from '../api/client';
+import { resolveStreamUrl } from '../api/client';
 import { Song } from '../api/types';
 
 export async function setupPlayer(): Promise<void> {
@@ -36,13 +36,13 @@ export async function setupPlayer(): Promise<void> {
 }
 
 /** Convert our Song into a react-native-track-player Track. */
-export function songToTrack(song: Song) {
+export async function songToTrack(song: Song) {
   return {
     id: song.id,
     url:
       song.isDownloaded && song.localPath
         ? song.localPath
-        : getStreamUrl(song.id),
+        : await resolveStreamUrl(song.id),
     title: song.title,
     artist: song.artist,
     artwork: song.cover,

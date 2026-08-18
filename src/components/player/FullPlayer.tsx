@@ -5,7 +5,6 @@ import { RootStackParamList } from '../../navigation/types';
 import {
   ActivityIndicator,
   Animated,
-  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -49,6 +48,7 @@ import { Song } from '../../api/types';
 import LyricsView from './LyricsView';
 import PressableScale from '../ui/PressableScale';
 import Toast from '../ui/Toast';
+import Artwork from '../ui/Artwork';
 import { colors } from '../../theme/colors';
 
 type Mode = 'player' | 'lyrics' | 'queue';
@@ -69,14 +69,19 @@ export default function FullPlayer() {
     togglePlay,
     next,
     previous,
+    skipNext,
+    skipPrevious,
     toggleRepeat,
     toggleShuffle,
     playAt,
     addToQueue,
     closePlayer,
+    markSeek,
     getSwipeTargets,
   } = usePlayer();
-  const { position, duration } = useProgress(500);
+  // NOTE: no useProgress() here on purpose — it ticks twice a second and would
+  // re-render this whole screen (modals included). SeekBar and LyricsView
+  // subscribe to progress themselves.
 
   const [mode, setMode] = useState<Mode>('player');
   const [lyrics, setLyrics] = useState<LyricsResult | null>(null);
@@ -97,8 +102,8 @@ export default function FullPlayer() {
   const heartScale = useRef(new Animated.Value(1)).current;
   // swipe the artwork left/right to scroll to the next/prev track
   const artworkGesture = useSwipeCarousel({
-    next,
-    previous,
+    next: skipNext,
+    previous: skipPrevious,
     enabled: mode === 'player',
     getSwipeTargets,
     currentSongId: currentSong?.id ?? null,
@@ -120,9 +125,9 @@ export default function FullPlayer() {
     [],
   );
 
-  // refresh per-track state
+  // refresh per-track state. The view mode is deliberately NOT reset — a
+  // track change while reading lyrics should keep showing lyrics.
   useEffect(() => {
-    setMode('player');
     setLyrics(null);
     setDownloadProgress(null);
     if (!currentSong) {
@@ -141,13 +146,25 @@ export default function FullPlayer() {
       setDownloaded(isDownloaded);
     })();
     setLyricsLoading(true);
-    fetchLyrics(currentSong).then((result) => {
+    (async () => {
+      // The player knows the real runtime; LRCLIB uses it to return the
+      // matching edit of the song (its timestamps only fit that one).
+      let playingDuration = currentSong.duration ?? 0;
+      try {
+        const progress = await TrackPlayer.getProgress();
+        if (progress.duration > 0) {
+          playingDuration = progress.duration;
+        }
+      } catch {
+        // keep the metadata duration
+      }
+      const result = await fetchLyrics(currentSong, playingDuration);
       if (!mounted) {
         return;
       }
       setLyrics(result);
       setLyricsLoading(false);
-    });
+    })();
     return () => {
       mounted = false;
     };
@@ -316,13 +333,7 @@ export default function FullPlayer() {
             <ActivityIndicator color={colors.green} size="large" />
           </View>
         ) : (
-          <LyricsView
-            lines={lyrics?.synced ?? []}
-            plain={lyrics?.plain}
-            position={position}
-            cover={currentSong.cover}
-            duration={duration}
-          />
+          <LyricsView lyrics={lyrics} cover={currentSong.cover} />
         )
       ) : mode === 'queue' ? (
         <ScrollView className="flex-1 px-2">
@@ -335,8 +346,9 @@ export default function FullPlayer() {
                 onPress={() => playAt(i)}
                 className="flex-row items-center px-2 py-2 active:bg-white/5"
               >
-                <Image
-                  source={{ uri: song.cover }}
+                <Artwork
+                  songId={song.id}
+                  uri={song.cover}
                   className="w-11 h-11 rounded"
                 />
                 <View className="flex-1 ml-3 min-w-0">
@@ -368,15 +380,30 @@ export default function FullPlayer() {
             <Animated.View
               style={{
                 flexDirection: 'row',
+                // keep the *current* cover in the visible slot even when a
+                // prev cover is rendered ahead of it
+                marginLeft: artworkGesture.rowOffset(coverWidth),
                 transform: [{ translateX: artworkGesture.translateX }],
               }}
             >
               {prevSong && (
-                <ArtworkCover song={prevSong} width={coverWidth} />
+                <ArtworkCover
+                  key={prevSong.id}
+                  song={prevSong}
+                  width={coverWidth}
+                />
               )}
-              <ArtworkCover song={currentSong} width={coverWidth} />
+              <ArtworkCover
+                key={currentSong.id}
+                song={currentSong}
+                width={coverWidth}
+              />
               {nextSong && (
-                <ArtworkCover song={nextSong} width={coverWidth} />
+                <ArtworkCover
+                  key={nextSong.id}
+                  song={nextSong}
+                  width={coverWidth}
+                />
               )}
             </Animated.View>
           </View>
@@ -404,7 +431,7 @@ export default function FullPlayer() {
       )}
 
       {/* Progress bar (always visible so position is never lost) */}
-      <SeekBar position={position} duration={duration} />
+      <SeekBar onSeek={markSeek} />
 
       {/* Controls */}
       <View className="flex-row items-center justify-between px-8 pb-5 mt-1">
@@ -705,15 +732,20 @@ export default function FullPlayer() {
 function ArtworkCover({ song, width }: { song: Song; width: number }) {
   return (
     <View style={{ width, marginRight: 10 }} className="shadow-2xl">
-      <Image
-        source={{ uri: song.cover }}
+      <Artwork
+        songId={song.id}
+        uri={song.cover}
         className="w-full aspect-square rounded-md"
+        spinnerSize="large"
       />
     </View>
   );
 }
 
-function SeekBar({ position, duration }: { position: number; duration: number }) {
+function SeekBar({ onSeek }: { onSeek: () => void }) {
+  // Progress is subscribed here rather than in FullPlayer so a tick re-renders
+  // only this bar, not the whole player screen.
+  const { position, duration } = useProgress(500);
   // Track whether the user is actively dragging. On Android the slider fires
   // onValueChange when its `value` prop is set programmatically (position
   // updates every 500ms) — without this guard that feedback loop re-renders
@@ -730,6 +762,7 @@ function SeekBar({ position, duration }: { position: number; duration: number })
         onSlidingStart={() => {
           setDragging(true);
           setDragValue(position);
+          onSeek();
         }}
         onValueChange={(value) => {
           // Ignore programmatic updates; only track real user drags.
@@ -739,6 +772,7 @@ function SeekBar({ position, duration }: { position: number; duration: number })
         }}
         onSlidingComplete={(value) => {
           setDragging(false);
+          onSeek();
           TrackPlayer.seekTo(value);
         }}
         minimumTrackTintColor="#ffffff"

@@ -71,6 +71,8 @@ async function searchViaYtDlp(query, limit = 25) {
     '--no-warnings',
     '--no-playlist',
     '--flat-playlist',
+    '--extractor-args',
+    'youtube:player_client=android;player_skip=webpage,configs',
     '-J',
     `ytsearch${Math.min(limit, 25)}:${query}`,
   ];
@@ -196,24 +198,15 @@ async function getYtdlpBin() {
  * bypass YouTube's bot checks (web gets "Sign in to confirm you're not a
  * bot"). `null` = default client.
  */
-// Kept short on purpose: each client is a separate YouTube request, and
-// YouTube rate-limits the (shared WARP) egress IP under repeated requests,
-// so fewer fallbacks = less likely to trip "Sign in to confirm you're not a
-// bot" / rate-limit. WARP already bypasses most bot-checks, so the default
-// client + a couple of fallbacks is enough.
-const YTDLP_CLIENTS = [null, 'android', 'tv'];
+// `player_skip=webpage,configs` makes yt-dlp skip the bot-challenged webpage
+// entirely, so each client gets a clean URL. Android first (most reliable),
+// then default, then TV as last resort.
+const YTDLP_CLIENTS = ['android', null, 'tv'];
 
-// YouTube's `n`-parameter / signature challenge now requires an external JS
-// runtime (we use the system node) plus yt-dlp's EJS challenge-solver scripts.
-// `--remote-components ejs:github` fetches them once and caches them locally.
-//
-// `--proxy` routes all YouTube traffic through Cloudflare WARP (free) so the
-// datacenter/VPS IP block ("Sign in to confirm you're not a bot") and the
-// googlevideo media 403 don't apply — but ONLY when WARP is actually running.
-// On a residential IP (or a box without WARP) the SOCKS port is dead and
-// routing through it makes EVERY yt-dlp call fail instantly with
-// "Command failed". So we probe the port first and only add `--proxy` when
-// something is listening; direct connections work fine otherwise.
+// `player_skip=webpage,configs` in extractor-args bypasses YouTube's bot
+// detection challenge page — the key flag that prevents 403s from datacenter
+// IPs. `--proxy` routes through Cloudflare WARP only when it's actually
+// running; on residential IPs the SOCKS port is dead, so we probe first.
 // Set YTDLP_PROXY="" in env to force-disable the proxy entirely.
 const YTDLP_PROXY = process.env.YTDLP_PROXY || 'socks5://127.0.0.1:1080';
 
@@ -239,8 +232,6 @@ async function isYtdlpProxyUp() {
 /** Base yt-dlp args; `--proxy` is included only when WARP is actually up. */
 async function getYtdlpGlobalArgs() {
   return [
-    '--js-runtimes', 'node',
-    '--remote-components', 'ejs:github',
     ...((await isYtdlpProxyUp()) ? ['--proxy', YTDLP_PROXY] : []),
   ];
 }
@@ -257,14 +248,13 @@ async function resolveWithYtdlp(videoUrl) {
       ...(await getYtdlpGlobalArgs()),
       '--no-playlist',
       '--no-warnings',
-      // IPv4-signed URLs play far more reliably on mobile networks.
-      '--force-ipv4',
-      '-f', 'bestaudio[ext=m4a]/bestaudio[ext=opus]/bestaudio',
+      // player_skip=webpage,configs avoids YouTube's bot detection challenge
+      // page — this is the key flag that prevents 403s from datacenter IPs.
+      '-f', 'ba/ba*',
       '-g',
+      '--extractor-args',
+      `youtube:player_client=${client ?? 'android'};player_skip=webpage,configs`,
     ];
-    if (client) {
-      args.push('--extractor-args', `youtube:player_client=${client}`);
-    }
     if (COOKIES_FILE) {
       args.push('--cookies', COOKIES_FILE);
     }

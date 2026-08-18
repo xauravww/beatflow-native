@@ -1,21 +1,29 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import {
   Linking,
+  Pressable,
   ScrollView,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
+import { RootStackParamList } from '../../navigation/types';
 import { colors } from '../../theme/colors';
 
 const FEATURES: { icon: string; title: string; subtitle: string }[] = [
   {
     icon: 'musical-notes',
     title: 'Unlimited streaming',
-    subtitle: 'Every song, free — powered by YouTube',
+    subtitle: 'Every song, free — straight from YouTube',
+  },
+  {
+    icon: 'phone-portrait-outline',
+    title: 'No backend needed',
+    subtitle: 'Search & stream resolve on your phone',
   },
   {
     icon: 'download-outline',
@@ -25,7 +33,7 @@ const FEATURES: { icon: string; title: string; subtitle: string }[] = [
   {
     icon: 'mic-outline',
     title: 'Synced lyrics',
-    subtitle: 'Karaoke-style highlighting as you play',
+    subtitle: 'Highlighted only when the timing really matches',
   },
   {
     icon: 'headset-outline',
@@ -54,12 +62,44 @@ const FEATURES: { icon: string; title: string; subtitle: string }[] = [
   },
 ];
 
+/** How a tap on a song actually becomes audio — the current pipeline. */
+const PIPELINE: { step: string; detail: string }[] = [
+  {
+    step: 'Search on device',
+    detail: 'YouTube Music is queried straight from the app (ytmusic-api).',
+  },
+  {
+    step: 'Resolve the stream',
+    detail:
+      "YouTube's InnerTube player API is called with the Android client and " +
+      'returns a progressive itag-18 media URL.',
+  },
+  {
+    step: 'Proxy it locally',
+    detail:
+      'A Kotlin HTTP server inside the app (127.0.0.1) serves that URL with ' +
+      'correct range/length semantics and a pinned client User-Agent.',
+  },
+  {
+    step: 'Play it',
+    detail:
+      'Media3 / ExoPlayer streams from the local URL via ' +
+      'react-native-track-player, so playback survives URL expiry.',
+  },
+];
+
 const LINKS: { icon: string; label: string; value: string; url: string }[] = [
   {
     icon: 'logo-github',
-    label: 'GitHub',
-    value: 'github.com/xauravww',
-    url: 'https://github.com/xauravww',
+    label: 'Source code',
+    value: 'github.com/xauravww/beatflow-native',
+    url: 'https://github.com/xauravww/beatflow-native',
+  },
+  {
+    icon: 'logo-discord',
+    label: 'Discord community',
+    value: 'discord.gg/jcaVcarRU5',
+    url: 'https://discord.gg/jcaVcarRU5',
   },
   {
     icon: 'mail-outline',
@@ -76,16 +116,51 @@ const LINKS: { icon: string; label: string; value: string; url: string }[] = [
 ];
 
 const CREDITS: { name: string; role: string }[] = [
-  { name: 'ytmusic-api', role: 'Unofficial YouTube Music search' },
-  { name: 'play-dl', role: 'Direct audio stream extraction' },
-  { name: 'LRCLIB', role: 'Synced lyrics provider' },
-  { name: 'react-native-track-player', role: 'Background playback engine' },
+  { name: 'ytmusic-api', role: 'On-device YouTube Music search' },
+  {
+    name: 'YouTube InnerTube player API',
+    role: 'Direct stream extraction (Android client, itag 18)',
+  },
+  {
+    name: 'In-app Kotlin stream server',
+    role: 'Local HTTP range proxy — no backend involved',
+  },
+  {
+    name: 'react-native-track-player + Media3',
+    role: 'Background playback engine',
+  },
+  { name: 'LRCLIB', role: 'Synced (LRC) lyrics provider' },
+  { name: 'AZLyrics', role: 'Plain-text lyrics fallback' },
+  { name: 'Spotify Web API', role: 'Playlist / album / artist import' },
+  {
+    name: 'react-native-sqlite-storage',
+    role: 'Library, lyrics cache & listening stats',
+  },
+  { name: 'react-native-fs', role: 'Offline downloads' },
   { name: 'React Native + NativeWind', role: 'App framework & styling' },
 ];
 
 export default function CreditsScreen() {
-  const navigation = useNavigation();
+  const navigation =
+    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const insets = useSafeAreaInsets();
+
+  // Hidden developer settings access: tap the logo 5× quickly.
+  const logoTaps = useRef(0);
+  const logoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleLogoPress = () => {
+    logoTaps.current += 1;
+    if (logoTimer.current) {
+      clearTimeout(logoTimer.current);
+    }
+    logoTimer.current = setTimeout(() => {
+      logoTaps.current = 0;
+    }, 2000);
+    if (logoTaps.current >= 5) {
+      logoTaps.current = 0;
+      navigation.navigate('Settings');
+    }
+  };
 
   return (
     <View className="flex-1" style={{ backgroundColor: '#0d0d0d' }}>
@@ -106,15 +181,19 @@ export default function CreditsScreen() {
       >
         {/* ---- Hero ---- */}
         <View className="items-center px-8 pt-8 pb-6">
-          <View className="w-24 h-24 rounded-full bg-[#1ed760] items-center justify-center shadow-2xl">
+          <Pressable
+            onPress={handleLogoPress}
+            className="w-24 h-24 rounded-full bg-[#1ed760] items-center justify-center shadow-2xl"
+          >
             <Icon name="musical-notes" size={48} color="#000000" />
-          </View>
+          </Pressable>
           <Text className="text-white text-4xl font-bold mt-6 tracking-tight">
             BeatFlow
           </Text>
           <Text className="text-white/50 text-sm mt-2 text-center leading-5">
-            A Spotify-style music player powered by{' '}
-            <Text className="text-[#1ed760]">unofficial YouTube APIs</Text>.
+            A Spotify-style music player that resolves and streams{' '}
+            <Text className="text-[#1ed760]">entirely on your device</Text> —
+            no backend server.
           </Text>
 
           {/* No ads badge */}
@@ -146,6 +225,43 @@ export default function CreditsScreen() {
                 <Text className="text-white/50 text-xs mt-1 leading-4">
                   {f.subtitle}
                 </Text>
+              </View>
+            ))}
+          </View>
+        </View>
+
+        {/* ---- How a song plays ---- */}
+        <View className="px-5 mt-4">
+          <Text className="text-white/50 text-xs font-semibold tracking-[0.2em] mb-4">
+            HOW A SONG PLAYS
+          </Text>
+          <View className="bg-[#181818] rounded-2xl p-4">
+            {PIPELINE.map((p, i) => (
+              <View key={p.step} className="flex-row">
+                {/* step number + connecting rail */}
+                <View className="items-center w-7">
+                  <View className="w-6 h-6 rounded-full bg-[#1ed760]/15 items-center justify-center">
+                    <Text className="text-[#1ed760] text-[11px] font-bold">
+                      {i + 1}
+                    </Text>
+                  </View>
+                  {i < PIPELINE.length - 1 && (
+                    <View className="flex-1 w-[1px] bg-white/10 my-1" />
+                  )}
+                </View>
+                <View
+                  className="flex-1 ml-3"
+                  style={{
+                    paddingBottom: i < PIPELINE.length - 1 ? 16 : 0,
+                  }}
+                >
+                  <Text className="text-white font-semibold text-[14px]">
+                    {p.step}
+                  </Text>
+                  <Text className="text-white/50 text-xs mt-1 leading-5">
+                    {p.detail}
+                  </Text>
+                </View>
               </View>
             ))}
           </View>

@@ -17,6 +17,8 @@ import { setCustomBackendBaseUrl, LOCAL_BASE_URL } from '../../api/client';
 import {
   getBackendBaseUrlSetting,
   setBackendBaseUrlSetting,
+  getYtCookiesSetting,
+  setYtCookiesSetting,
 } from '../../db/settings';
 import { usePlayer } from '../../context/PlayerContext';
 
@@ -29,14 +31,21 @@ export default function SettingsScreen() {
   const [savedUrl, setSavedUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [cookiesInput, setCookiesInput] = useState('');
+  const [savedCookies, setSavedCookies] = useState(false);
 
   useEffect(() => {
     let mounted = true;
     (async () => {
-      const url = (await getBackendBaseUrlSetting().catch(() => null)) ?? null;
+      const [url, cookies] = await Promise.all([
+        getBackendBaseUrlSetting().catch(() => null),
+        getYtCookiesSetting().catch(() => null),
+      ]);
       if (mounted) {
         setSavedUrl(url);
         setInput(url ?? '');
+        setCookiesInput(cookies ?? '');
+        setSavedCookies(!!cookies);
       }
     })();
     return () => {
@@ -75,6 +84,13 @@ export default function SettingsScreen() {
     setSavedUrl(null);
     setError(null);
     showToast('Backend reset to defaults');
+  };
+
+  const handleSaveCookies = async () => {
+    const value = cookiesInput.trim();
+    await setYtCookiesSetting(value || null);
+    setSavedCookies(!!value);
+    showToast(value ? 'YouTube cookies saved' : 'YouTube cookies cleared');
   };
 
   return (
@@ -177,6 +193,51 @@ export default function SettingsScreen() {
                   </Text>
                 )}
               </View>
+            </View>
+          </View>
+
+          {/* ---- YouTube cookies (advanced) ---- */}
+          <View className="px-5 mt-6">
+            <Text className="text-white/50 text-xs font-semibold tracking-[0.2em] mb-4">
+              YOUTUBE COOKIES (ADVANCED)
+            </Text>
+            <View className="bg-[#181818] rounded-2xl p-5">
+              <View className="flex-row items-center mb-3">
+                <View className="w-10 h-10 rounded-full bg-[#1ed760]/15 items-center justify-center">
+                  <Icon name="key-outline" size={19} color="#1ed760" />
+                </View>
+                <View className="flex-1 ml-3">
+                  <Text className="text-white font-bold text-[15px]">
+                    YouTube cookies
+                  </Text>
+                  <Text className="text-white/50 text-xs mt-0.5">
+                    Fixes the ~1MB stream cap on flagged networks — the URL
+                    then serves the complete song, just like the backend's
+                    YT_COOKIES
+                  </Text>
+                </View>
+              </View>
+              <TextInput
+                value={cookiesInput}
+                onChangeText={setCookiesInput}
+                placeholder={
+                  'Paste cookies.txt exported from a browser\nlogged into YouTube (Get cookies.txt LOCALLY)'
+                }
+                placeholderTextColor="rgba(255,255,255,0.35)"
+                autoCapitalize="none"
+                autoCorrect={false}
+                multiline
+                numberOfLines={4}
+                className="bg-white/10 rounded-xl px-4 py-3 text-white text-[13px] min-h-[90px]"
+              />
+              <TouchableOpacity
+                onPress={handleSaveCookies}
+                className="mt-3 bg-[#1ed760] rounded-full px-4 py-3 items-center"
+              >
+                <Text className="text-black font-bold text-sm">
+                  {savedCookies ? 'Update cookies' : 'Save cookies'}
+                </Text>
+              </TouchableOpacity>
             </View>
           </View>
 
